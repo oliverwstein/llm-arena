@@ -11,7 +11,7 @@ Gengar @ Life Orb
 Ability: Levitate  
 EVs: 4 Atk / 252 SpA / 252 Spe  
 Hasty Nature  
-- Sleep Talk  
+- Substitute  
 - Explosion  
 - Shadow Ball  
 - Focus Blast  
@@ -41,6 +41,7 @@ Ability: Magnet Pull
 Shiny: Yes  
 EVs: 100 HP / 252 SpA / 156 Spe  
 Modest Nature  
+IVs: 30 Atk / 30 SpA  
 - Thunder Wave  
 - Thunderbolt  
 - Hidden Power [Grass]  

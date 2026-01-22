@@ -3,7 +3,7 @@ Ability: Poison Point
 EVs: 252 SpA / 4 SpD / 252 Spe  
 Timid Nature  
 IVs: 3 Atk / 30 SpA / 30 SpD  
-- Sleep Powder  
+- Sludge Bomb  
 - Leaf Storm  
 - Toxic Spikes  
 - Hidden Power [Ground]  

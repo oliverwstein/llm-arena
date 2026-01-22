@@ -54,5 +54,5 @@ Bold Nature
 IVs: 0 Atk  
 - Discharge  
 - Shadow Ball  
-- Rest  
-- Sleep Talk  
+- Blizzard  
+- Will-O-Wisp  

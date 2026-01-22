@@ -1,0 +1,70 @@
+# Model configurations for tournament
+#
+# Each model can be:
+#   1. An LLM model (requires API key)
+#   2. A built-in bot (set force_fallback: true)
+#
+# If an LLM model's API key is missing, it automatically falls back to a random bot.
+#
+# Built-in bot types (use with force_fallback: true):
+#   - random: Makes random legal moves
+#   - heuristic: Uses poke-env's SimpleHeuristicsPlayer
+#
+# For external bots like Technical Machine, run them as separate processes
+# that connect to the same Pokemon Showdown server.
+
+models:
+  # OpenAI
+  - name: "GPT-4o"
+    model: "gpt-4o"
+    temperature: 0.7
+
+  - name: "GPT-4-Turbo"
+    model: "gpt-4-turbo"
+    temperature: 0.7
+
+  - name: "GPT-4o-Mini"
+    model: "gpt-4o-mini"
+    temperature: 0.7
+
+  # Anthropic
+  - name: "Claude-Opus"
+    model: "claude-opus-4-20250514"
+    temperature: 0.7
+
+  - name: "Claude-Sonnet"
+    model: "claude-sonnet-4-20250514"
+    temperature: 0.7
+
+  - name: "Claude-Haiku"
+    model: "claude-3-5-haiku-20241022"
+    temperature: 0.7
+
+  # Google
+  - name: "Gemini-Pro"
+    model: "gemini/gemini-1.5-pro"
+    temperature: 0.7
+
+  - name: "Gemini-Flash"
+    model: "gemini/gemini-2.0-flash"
+    temperature: 0.7
+
+  # xAI
+  - name: "Grok-2"
+    model: "xai/grok-2"
+    temperature: 0.7
+
+  # Meta (via various providers)
+  - name: "Llama-3-70B"
+    model: "together_ai/meta-llama/Llama-3-70b-chat-hf"
+    temperature: 0.7
+
+  # Local (Ollama)
+  - name: "Llama-3-Local"
+    model: "ollama/llama3"
+    temperature: 0.7
+
+# Example: Force a model to use random bot (for testing/baseline)
+# - name: "Random-Baseline"
+#   model: "gpt-4o"  # Model ID doesn't matter when force_fallback is true
+#   force_fallback: true
