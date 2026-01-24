@@ -68,9 +68,13 @@ def _parse_actions(events: list, perspective: str) -> list:
     actions = []
 
     for event in events:
-        if not event:
+        if not event or len(event) < 2:
             continue
 
+        # Normalize event format: poke-env events have empty first element
+        if event[0] == '':
+            event = event[1:]
+        
         event_type = event[0] if event else ""
 
         if event_type == "move":

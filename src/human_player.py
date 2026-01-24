@@ -2,7 +2,7 @@
 
 import json
 from poke_env.player import Player
-from poke_env.environment import AbstractBattle
+from poke_env.player.player import AbstractBattle
 
 from .state_formatter import format_battle_state
 from .event_formatter import format_events

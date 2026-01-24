@@ -38,16 +38,24 @@ def format_event(event: list[str], perspective: str = "p1") -> Optional[str]:
     Convert a single protocol event to human-readable text.
     
     Args:
-        event: List of event parts (e.g., ['move', 'p1a: Bronzong', 'Protect', ...])
+        event: List of event parts (e.g., ['', 'move', 'p1a: Bronzong', 'Protect', ...])
+               Note: poke-env events typically have an empty first element
         perspective: Player perspective ('p1' or 'p2')
     
     Returns:
         Human-readable string, or None if event should be hidden
     """
-    if not event or not event[0]:
+    if not event or len(event) < 2:
         return None
     
-    cmd = event[0]
+    # poke-env events have an empty first element; the command is at index 1
+    # Handle both formats: ['', 'move', ...] and ['move', ...]
+    if event[0] == '':
+        cmd = event[1] if len(event) > 1 else ""
+        # Shift indices for the rest of the event data
+        event = event[1:]  # Now event[0] is the command
+    else:
+        cmd = event[0]
     
     # Skip meta events
     if cmd in ('', 'upkeep', 'request', 't:', 'c:', 'debug', 'inactive', 'inactiveoff'):
