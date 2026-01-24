@@ -1265,7 +1265,7 @@ class LLMPlayerWithTools(LLMPlayer):
             return ""
 
         events = battle.observations[prev_turn].events
-        perspective = "p1" if "p1" in str(battle.player_username) else "p2"
+        perspective = battle.player_role  # Returns "p1" or "p2"
         return format_events(events, perspective)
 
     async def _run_reasoning_subagent(
@@ -1383,7 +1383,7 @@ Your final response must include:
                 timeout=self.timeout,
             )
             return self._parse_subagent_response(response.choices[0].message.content, plan_updates)
-        except:
+        except Exception:
             return {"action": "", "reasoning": "", "plan_updates": plan_updates}
 
     def _format_battle_plan(self, plan: dict) -> str:
@@ -1448,6 +1448,12 @@ Your final response must include:
                     if goal["id"] == goal_id:
                         goal["notes"] = update.get("text", "")
 
+            elif action == "abandon_goal":
+                goal_id = update.get("goal_id")
+                for goal in plan["goals"]:
+                    if goal["id"] == goal_id:
+                        goal["status"] = "abandoned"
+
     def battle_finished_callback(self, battle: AbstractBattle) -> None:
         """Clean up when battle ends."""
         super().battle_finished_callback(battle)
@@ -1509,90 +1515,142 @@ def get_type_effectiveness(attack_type: str, defender_types: list[str], gen: int
     }
 ```
 
-### Damage Calculation (using poke-env's calculator)
+### Damage Calculation (using SimpleHeuristicsPlayer's approach)
+
+> **Implementation Note**: poke-env's `SimpleHeuristicsPlayer` uses a clever relative scoring 
+> formula rather than calculating actual HP damage. We derive our tools from these battle-tested 
+> methods. The score is useful for ranking moves; we can also convert to approximate percentages.
 
 ```python
 # src/tools/damage_tools.py
 
-from poke_env.calc import calculate_damage
 from poke_env.player.player import AbstractBattle
+from poke_env.player.baselines import SimpleHeuristicsPlayer
+from poke_env.battle.move_category import MoveCategory
 
-def calc_damage_for_move(move_name: str, battle: AbstractBattle) -> dict:
-    """Calculate damage for a move against current opponent."""
+def _stat_estimation(mon, stat: str) -> float:
+    """
+    Estimate effective stat value with boosts.
+    Directly from SimpleHeuristicsPlayer._stat_estimation.
+    """
+    if mon.boosts[stat] > 1:
+        boost = (2 + mon.boosts[stat]) / 2
+    else:
+        boost = 2 / (2 - mon.boosts[stat])
+    return ((2 * mon.base_stats[stat] + 31) + 5) * boost
 
-    attacker = battle.active_pokemon
-    defender = battle.opponent_active_pokemon
 
-    # Find the move object
-    move = None
-    for m in battle.available_moves:
-        if m.id == move_name.lower().replace(" ", ""):
-            move = m
-            break
+def calc_move_score(move, attacker, defender, physical_ratio: float, special_ratio: float) -> float:
+    """
+    Calculate heuristic score for a move.
+    Derived from SimpleHeuristicsPlayer.choose_singles_move scoring formula.
+    """
+    if move.category == MoveCategory.STATUS:
+        return 0
+    
+    return (
+        move.base_power
+        * (1.5 if move.type in attacker.types else 1)  # STAB
+        * (physical_ratio if move.category == MoveCategory.PHYSICAL else special_ratio)
+        * move.accuracy
+        * move.expected_hits
+        * defender.damage_multiplier(move)
+    )
 
-    if not move:
-        return {"error": f"Move '{move_name}' not found in available moves"}
 
-    if move.category.name == "STATUS":
-        return {
+def calculate_all_damages(battle: AbstractBattle) -> dict:
+    """
+    Calculate damage scores for all available moves.
+    Uses SimpleHeuristicsPlayer's scoring approach.
+    """
+    active = battle.active_pokemon
+    opponent = battle.opponent_active_pokemon
+
+    if not active or not opponent:
+        return {"error": "No active Pokemon"}
+
+    # Stat ratios from SimpleHeuristicsPlayer
+    physical_ratio = _stat_estimation(active, "atk") / _stat_estimation(opponent, "def")
+    special_ratio = _stat_estimation(active, "spa") / _stat_estimation(opponent, "spd")
+
+    moves = []
+    for move in battle.available_moves:
+        if move.category == MoveCategory.STATUS:
+            moves.append({
+                "move": move.id,
+                "type": move.type.name.lower(),
+                "category": "status",
+                "is_status": True,
+                "effect": str(move.secondary) if move.secondary else "Status move"
+            })
+            continue
+
+        score = calc_move_score(move, active, opponent, physical_ratio, special_ratio)
+        effectiveness = opponent.damage_multiplier(move)
+        is_stab = move.type in [t for t in active.types if t]
+
+        # Convert score to approximate damage percentage
+        # Heuristic: score of ~150-200 is roughly OHKO range for neutral matchups
+        # This is a rough estimate for LLM reasoning
+        approx_percent = min(100, (score / 150) * 100)
+
+        moves.append({
             "move": move.id,
             "type": move.type.name.lower(),
-            "is_status": True,
-            "damage": 0,
-            "effect": move.entry.get("shortDesc", "Status move")
-        }
+            "category": move.category.name.lower(),
+            "base_power": move.base_power,
+            "heuristic_score": round(score, 1),
+            "approx_percent": round(approx_percent, 1),
+            "effectiveness": effectiveness,
+            "is_stab": is_stab,
+            "accuracy": move.accuracy,
+            "priority": move.priority,
+            "can_ohko": approx_percent >= 100,
+            "can_2hko": approx_percent >= 50
+        })
 
-    # Use poke-env's damage calculator
-    min_dmg, max_dmg = calculate_damage(
-        attacker.species,
-        defender.species,
-        move.id,
-        battle
-    )
-
-    # Calculate percentages
-    defender_hp = defender.max_hp or 100  # Estimate if unknown
-    min_pct = (min_dmg / defender_hp) * 100
-    max_pct = (max_dmg / defender_hp) * 100
-    avg_pct = (min_pct + max_pct) / 2
-
-    # Check for STAB
-    is_stab = move.type in attacker.types
-
-    # Effectiveness
-    effectiveness = move.type.damage_multiplier(
-        defender.types[0],
-        defender.types[1] if len(defender.types) > 1 else None,
-        type_chart=battle.gen.type_chart
-    )
+    # Sort by score descending
+    moves.sort(key=lambda m: m.get("heuristic_score", 0), reverse=True)
 
     return {
-        "move": move.id,
-        "type": move.type.name.lower(),
-        "base_power": move.base_power,
-        "min_damage": min_dmg,
-        "max_damage": max_dmg,
-        "min_percent": round(min_pct, 1),
-        "max_percent": round(max_pct, 1),
-        "avg_percent": round(avg_pct, 1),
-        "effectiveness": effectiveness,
-        "is_stab": is_stab,
-        "can_ohko": max_pct >= 100,
-        "can_2hko": avg_pct >= 50
+        "your_pokemon": active.species,
+        "opponent_pokemon": opponent.species,
+        "moves": moves,
+        "physical_ratio": round(physical_ratio, 2),
+        "special_ratio": round(special_ratio, 2)
     }
+
+
+def calculate_damage(battle: AbstractBattle, move_name: str) -> dict:
+    """Calculate damage for a specific move. Wrapper around calculate_all_damages."""
+    result = calculate_all_damages(battle)
+    if "error" in result:
+        return result
+    
+    normalized = move_name.lower().replace(" ", "").replace("-", "")
+    for move in result["moves"]:
+        if move["move"] == normalized or move["move"].replace("-", "") == normalized:
+            return move
+    
+    return {"error": f"Move '{move_name}' not found in available moves"}
 ```
 
-### Matchup Evaluation (mirroring heuristic player)
+### Matchup Evaluation (directly using SimpleHeuristicsPlayer)
+
+> **Implementation Note**: We import and use `SimpleHeuristicsPlayer._estimate_matchup` directly.
+> This ensures our matchup scores are consistent with the heuristic baseline player.
 
 ```python
 # src/tools/matchup_tools.py
 
+from poke_env.player.player import AbstractBattle
+from poke_env.player.baselines import SimpleHeuristicsPlayer
+
 def evaluate_matchup(battle: AbstractBattle, pokemon_name: str = None) -> dict:
-    """Evaluate matchup score (mirrors SimpleHeuristicsPlayer._estimate_matchup)."""
-
-    SPEED_TIER_COEF = 0.1
-    HP_FRACTION_COEF = 0.4
-
+    """
+    Evaluate matchup score using SimpleHeuristicsPlayer's formula.
+    Positive score = favorable, negative = unfavorable.
+    """
     # Get the Pokemon to evaluate
     if pokemon_name:
         mon = None
@@ -1607,61 +1665,111 @@ def evaluate_matchup(battle: AbstractBattle, pokemon_name: str = None) -> dict:
 
     opponent = battle.opponent_active_pokemon
 
-    if not opponent:
-        return {"error": "No opponent Pokemon visible"}
+    if not mon or not opponent:
+        return {"error": "Missing Pokemon for matchup evaluation"}
 
-    # Offensive typing: how effective are we against them?
-    offensive_score = max(
-        opponent.damage_multiplier(t) for t in mon.types if t
-    )
+    # Use SimpleHeuristicsPlayer's matchup formula directly
+    score = SimpleHeuristicsPlayer._estimate_matchup(mon, opponent)
 
-    # Defensive typing: how effective are they against us?
-    defensive_score = -max(
-        mon.damage_multiplier(t) for t in opponent.types if t
-    )
-
-    # Speed advantage
-    speed_score = 0
-    if mon.base_stats and opponent.base_stats:
-        if mon.base_stats["spe"] > opponent.base_stats["spe"]:
-            speed_score = SPEED_TIER_COEF
-        else:
-            speed_score = -SPEED_TIER_COEF
-
-    # HP advantage
-    hp_score = (mon.current_hp_fraction - opponent.current_hp_fraction) * HP_FRACTION_COEF
-
-    # Boost advantage
-    boost_score = 0
-    for stat, val in mon.boosts.items():
-        boost_score += val * 0.1
-
-    total_score = offensive_score + defensive_score + speed_score + hp_score + boost_score
-
-    # Verdict
-    if total_score > 1.0:
+    # Interpret the score
+    if score > 1.0:
         verdict = "strongly favorable"
-    elif total_score > 0.3:
+    elif score > 0.3:
         verdict = "favorable"
-    elif total_score > -0.3:
+    elif score > -0.3:
         verdict = "neutral"
-    elif total_score > -1.0:
+    elif score > -1.0:
         verdict = "unfavorable"
     else:
         verdict = "strongly unfavorable"
 
+    # Break down the components for transparency
+    offensive = max([opponent.damage_multiplier(t) for t in mon.types if t is not None])
+    defensive = max([mon.damage_multiplier(t) for t in opponent.types if t is not None])
+    
+    speed_diff = 0
+    if mon.base_stats["spe"] > opponent.base_stats["spe"]:
+        speed_diff = SimpleHeuristicsPlayer.SPEED_TIER_COEFICIENT
+    elif opponent.base_stats["spe"] > mon.base_stats["spe"]:
+        speed_diff = -SimpleHeuristicsPlayer.SPEED_TIER_COEFICIENT
+
+    hp_diff = (
+        mon.current_hp_fraction - opponent.current_hp_fraction
+    ) * SimpleHeuristicsPlayer.HP_FRACTION_COEFICIENT
+
     return {
         "your_pokemon": mon.species,
         "opponent_pokemon": opponent.species,
-        "matchup_score": round(total_score, 2),
+        "matchup_score": round(score, 2),
         "verdict": verdict,
         "factors": {
-            "offensive_typing": round(offensive_score, 2),
-            "defensive_typing": round(defensive_score, 2),
-            "speed_advantage": round(speed_score, 2),
-            "hp_advantage": round(hp_score, 2),
-            "boost_advantage": round(boost_score, 2)
-        }
+            "offensive_typing": round(offensive, 2),
+            "defensive_typing": round(-defensive, 2),
+            "speed_tier": round(speed_diff, 2),
+            "hp_difference": round(hp_diff, 2)
+        },
+        "note": "Score uses SimpleHeuristicsPlayer._estimate_matchup formula"
+    }
+
+
+def evaluate_all_matchups(battle: AbstractBattle) -> dict:
+    """Evaluate matchups for all your Pokemon against current opponent."""
+    opponent = battle.opponent_active_pokemon
+    if not opponent:
+        return {"error": "No opponent Pokemon visible"}
+
+    matchups = []
+    for pokemon in battle.team.values():
+        if pokemon.fainted:
+            continue
+        
+        score = SimpleHeuristicsPlayer._estimate_matchup(pokemon, opponent)
+        matchups.append({
+            "pokemon": pokemon.species,
+            "matchup_score": round(score, 2),
+            "is_active": pokemon == battle.active_pokemon,
+            "hp_percent": round(pokemon.current_hp_fraction * 100, 1)
+        })
+
+    # Sort by matchup score descending
+    matchups.sort(key=lambda m: m["matchup_score"], reverse=True)
+
+    return {
+        "opponent": opponent.species,
+        "matchups": matchups,
+        "best_matchup": matchups[0]["pokemon"] if matchups else None
+    }
+
+
+def should_switch(battle: AbstractBattle) -> dict:
+    """
+    Determine if switching is advisable using SimpleHeuristicsPlayer's logic.
+    """
+    should = SimpleHeuristicsPlayer._should_switch_out(battle)
+    
+    active = battle.active_pokemon
+    opponent = battle.opponent_active_pokemon
+    
+    if not active or not opponent:
+        return {"should_switch": False, "reason": "Missing Pokemon"}
+
+    current_matchup = SimpleHeuristicsPlayer._estimate_matchup(active, opponent)
+    
+    # Find best switch
+    best_switch = None
+    best_score = current_matchup
+    for mon in battle.available_switches:
+        score = SimpleHeuristicsPlayer._estimate_matchup(mon, opponent)
+        if score > best_score:
+            best_score = score
+            best_switch = mon
+
+    return {
+        "should_switch": should,
+        "current_matchup": round(current_matchup, 2),
+        "best_switch": best_switch.species if best_switch else None,
+        "best_switch_matchup": round(best_score, 2) if best_switch else None,
+        "threshold": SimpleHeuristicsPlayer.SWITCH_OUT_MATCHUP_THRESHOLD
     }
 ```
 
@@ -1853,12 +1961,32 @@ def get_opponent_team_summary(battle: AbstractBattle) -> dict:
     }
 ```
 
-### Battle Log Tools (using poke-env observations)
+### Battle Log Tools (for historical events only)
+
+> **Key Insight: Current State vs Battle History**
+> 
+> Like `SimpleHeuristicsPlayer`, most of our tools use the **current state** from the `Battle` object:
+> - `battle.active_pokemon` / `battle.opponent_active_pokemon` - current HP, status, boosts
+> - `battle.team` / `battle.opponent_team` - all Pokemon with current states
+> - `battle.available_moves` / `battle.available_switches` - current options
+> - `battle.weather`, `battle.side_conditions` - current field state
+> 
+> poke-env **automatically updates** these as Showdown events arrive. We don't need to track state ourselves.
+> 
+> The `Observation` class is **only needed for historical events** (what happened on turn N).
+> It contains just `events: List[List[str]]`—the raw Showdown protocol for that turn.
+>
+> | Tool Category | Data Source | Needs Observation? |
+> |--------------|-------------|-------------------|
+> | Damage calc, matchups | `battle.active_pokemon`, `battle.opponent_active_pokemon` | ❌ No |
+> | Team tools | `battle.team`, `battle.opponent_team` | ❌ No |
+> | Field analysis | `battle.weather`, `battle.side_conditions` | ❌ No |
+> | Battle log | `battle.observations[turn].events` | ✅ Yes |
+> | Turn details | `battle.observations[turn].events` | ✅ Yes |
 
 ```python
 # src/tools/battle_log_tools.py
 
-import json
 from poke_env.player.player import AbstractBattle
 from src.event_formatter import format_events
 
@@ -1870,8 +1998,8 @@ def get_battle_log(battle: AbstractBattle, format: str = "narrative", from_turn:
     not what the LLM remembers or infers.
     """
 
-    # Determine perspective
-    perspective = "p1" if "p1" in str(battle.player_username) else "p2"
+    # Use battle.player_role for reliable perspective detection
+    perspective = battle.player_role  # Returns "p1" or "p2"
 
     turns = []
 
@@ -1890,15 +2018,14 @@ def get_battle_log(battle: AbstractBattle, format: str = "narrative", from_turn:
             })
 
         elif format == "detailed":
-            # Structured with exact HP values
+            # Parse actions from events (Observation only has events, not Pokemon state)
+            actions = _parse_actions(obs.events, perspective)
+            
+            # Extract state changes from the parsed actions
             turns.append({
                 "turn": turn_num,
-                "your_pokemon": _serialize_pokemon(obs.active_pokemon),
-                "opponent_pokemon": _serialize_pokemon(obs.opponent_active_pokemon),
-                "weather": [w.name for w in obs.weather.keys()],
-                "your_hazards": [sc.name for sc in obs.side_conditions.keys()],
-                "opponent_hazards": [sc.name for sc in obs.opponent_side_conditions.keys()],
-                "actions": _parse_actions(obs.events, perspective)
+                "actions": actions,
+                "events_raw": ["|".join(event) for event in obs.events]
             })
 
         elif format == "raw":
@@ -1918,40 +2045,17 @@ def get_turn_details(battle: AbstractBattle, turn: int) -> dict:
         return {"error": f"Turn {turn} not found. Battle is on turn {battle.turn}."}
 
     obs = battle.observations[turn]
-    perspective = "p1" if "p1" in str(battle.player_username) else "p2"
+    perspective = battle.player_role  # More reliable than string matching
+    
+    # Note: Observation only contains events, not Pokemon state snapshots.
+    # We parse state from the events themselves.
+    actions = _parse_actions(obs.events, perspective)
 
     return {
         "turn": turn,
-        "state_at_turn_start": {
-            "your_active": _serialize_pokemon(obs.active_pokemon),
-            "opponent_active": _serialize_pokemon(obs.opponent_active_pokemon),
-            "weather": [w.name for w in obs.weather.keys()],
-            "terrain": [f.name for f in obs.fields.keys()],
-            "your_side_conditions": [sc.name for sc in obs.side_conditions.keys()],
-            "opponent_side_conditions": [sc.name for sc in obs.opponent_side_conditions.keys()],
-        },
         "events_narrative": format_events(obs.events, perspective),
+        "events_detailed": actions,
         "events_raw": ["|".join(event) for event in obs.events]
-    }
-
-
-def _serialize_pokemon(pokemon) -> dict:
-    """Serialize pokemon state with exact HP."""
-    if pokemon is None:
-        return None
-
-    # HP is stored as fraction, but we can show it clearly
-    hp_fraction = pokemon.current_hp_fraction
-    hp_percent = round(hp_fraction * 100, 1)
-
-    return {
-        "species": pokemon.species,
-        "hp_percent": hp_percent,
-        "hp_fraction": hp_fraction,
-        "status": pokemon.status.name if pokemon.status else None,
-        "boosts": dict(pokemon.boosts) if pokemon.boosts else {},
-        "ability": pokemon.ability,
-        "item": pokemon.item
     }
 
 
@@ -2273,7 +2377,96 @@ python scripts/benchmark_vs_heuristic.py \
     --games 50
 ```
 
----
+### Human Player (Interactive Testing)
+
+For testing and validation, a `HumanPlayer` class lets you experience exactly what the LLM sees and interact with tools from the terminal.
+
+```python
+# src/human_player.py
+
+from poke_env.player import Player
+from poke_env.player.player import AbstractBattle
+import json
+
+class HumanPlayer(Player):
+    """Human-controlled player for testing the tool harness experience."""
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._current_battle = None
+
+    async def choose_move(self, battle: AbstractBattle) -> str:
+        from .state_formatter import format_battle_state
+        from .event_formatter import format_events
+        from .response_parser import parse_llm_response
+        from .tools import damage_tools, matchup_tools, team_tools, battle_log_tools
+        
+        self._current_battle = battle
+        
+        # Show what LLM would see
+        print("\n" + "="*60)
+        print(f"TURN {battle.turn}")
+        print("="*60)
+        
+        # Previous turn events
+        if battle.turn > 1 and (battle.turn - 1) in battle.observations:
+            events = battle.observations[battle.turn - 1].events
+            print("\nWHAT HAPPENED:")
+            print(format_events(events, battle.player_role))
+        
+        print("\nCURRENT STATE:")
+        print(format_battle_state(battle))
+        
+        # Tool registry
+        tools = {
+            "damage": lambda: damage_tools.calculate_all_damages(battle),
+            "matchup": lambda: matchup_tools.evaluate_matchup(battle),
+            "matchups": lambda: matchup_tools.evaluate_all_matchups(battle),
+            "switch?": lambda: matchup_tools.should_switch(battle),
+            "team": lambda: team_tools.get_team_summary(battle),
+            "opponent": lambda: team_tools.get_opponent_team_summary(battle),
+            "log": lambda: battle_log_tools.get_battle_log(battle, "narrative"),
+        }
+        
+        # Interactive prompt
+        while True:
+            print("\n[Commands: move <name>, switch <name>]")
+            print("[Tools: damage, matchup, matchups, switch?, team, opponent, log]")
+            user_input = input("> ").strip()
+            
+            if user_input.lower().startswith(("move ", "switch ")):
+                action = parse_llm_response(user_input, battle)
+                if action:
+                    return self.create_order(action)
+                print("Invalid action. Try again.")
+            
+            elif user_input.lower() in tools:
+                result = tools[user_input.lower()]()
+                print(json.dumps(result, indent=2, default=str))
+            
+            elif user_input.lower() == "help":
+                print("Actions: move <name>, switch <name>")
+                print("Tools: damage, matchup, matchups, switch?, team, opponent, log")
+            
+            else:
+                print("Unknown command. Type 'help' for options.")
+```
+
+**Usage:**
+
+```bash
+# Battle human vs heuristic
+python scripts/human_vs_heuristic.py
+
+# Human vs LLM (watch the LLM play while you control the other side)
+python scripts/human_vs_llm.py --opponent gpt-4o
+```
+
+**Benefits:**
+- See exactly what info the LLM gets each turn
+- Call any tool interactively to verify it provides useful data
+- Validate that the state/event formatting is sufficient for decision-making
+- Debug issues by comparing your reasoning with LLM decisions
 
 ## Tool Result Caching
 
