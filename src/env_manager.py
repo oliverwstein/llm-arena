@@ -23,7 +23,11 @@ MODEL_API_KEYS = {
     # xAI models
     "xai/": "XAI_API_KEY",
     "grok-": "XAI_API_KEY",
-    
+
+    # DeepSeek models
+    "deepseek/": "DEEPSEEK_API_KEY",
+    "deepseek-": "DEEPSEEK_API_KEY",
+
     # Together AI models
     "together_ai/": "TOGETHER_API_KEY",
     "together/": "TOGETHER_API_KEY",

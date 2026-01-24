@@ -1,6 +1,7 @@
 """Format battle state for LLM consumption."""
 
 from poke_env.player.player import Battle, Pokemon, Move
+from typing import List
 
 
 def format_pokemon(pokemon: Pokemon, full_info: bool = False) -> str:
@@ -64,8 +65,11 @@ def format_battle_state(battle: Battle) -> str:
     lines.append("")
 
     # Check for forced switch (Pokemon fainted)
-    # force_switch is a list (for doubles compatibility), check with any()
-    is_forced_switch = any(battle.force_switch) if battle.force_switch else False
+    # force_switch is a bool in singles, list in doubles
+    if isinstance(battle.force_switch, bool):
+        is_forced_switch = battle.force_switch
+    else:
+        is_forced_switch = any(battle.force_switch) if battle.force_switch else False
     if is_forced_switch:
         lines.append("*** YOUR POKEMON FAINTED - YOU MUST SWITCH ***")
         lines.append("")

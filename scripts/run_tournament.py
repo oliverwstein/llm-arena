@@ -19,10 +19,11 @@ from src.results import ResultsDB
 
 # Default models to test
 DEFAULT_MODELS = [
-    ModelConfig(name="GPT-4o", model="gpt-4o"),
-    ModelConfig(name="Claude-Sonnet", model="claude-sonnet-4-20250514"),
-    ModelConfig(name="Gemini-Flash", model="gemini/gemini-2.0-flash"),
-    ModelConfig(name="Grok-2", model="xai/grok-2"),
+    ModelConfig(name="Claude-Sonnet-4.5", model="claude-sonnet-4-5-20251101"),
+    ModelConfig(name="GPT-5.1", model="gpt-5.1"),
+    ModelConfig(name="Gemini-3.0-Flash", model="gemini/gemini-3.0-flash"),
+    ModelConfig(name="DeepSeek-Reasoner", model="deepseek/deepseek-reasoner"),
+    ModelConfig(name="Grok-4", model="xai/grok-4"),
 ]
 
 

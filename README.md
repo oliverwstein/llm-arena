@@ -172,11 +172,15 @@ Player Status:
    bash scripts/setup_technical_machine.sh
    ```
 
-2. Configure Technical Machine's `settings.json` to connect to your Pokemon Showdown server
+2. Test the installation:
+   ```bash
+   bash scripts/test_technical_machine.sh
+   ```
+   This will auto-configure TM, start the Showdown server if needed, and run a test battle.
 
 3. Run Technical Machine as a separate process while running your tournament
 
-**Note**: Technical Machine requires advanced C++ toolchains and may not build on all systems.
+**Note**: Technical Machine requires C++26 features (parallel execution policies) that are only available on Linux with libstdc++. It will **not build on macOS**.
 
 ## How It Works
 
@@ -188,16 +192,15 @@ Player Status:
 
 ## Supported LLMs
 
-Via LiteLLM, the arena supports:
-- OpenAI (gpt-4o, gpt-4-turbo, gpt-4o-mini)
-- Anthropic (claude-opus-4, claude-sonnet-4, claude-3-5-haiku)
-- Google (gemini-1.5-pro, gemini-2.0-flash)
-- xAI (grok-2)
-- Together AI (Llama models)
-- Groq (fast inference)
-- Mistral
-- Cohere
-- Ollama (local models)
+The default tournament configuration includes:
+- **Anthropic**: Claude Opus 4.5, Claude Sonnet 4.5, Claude Haiku 4.5
+- **OpenAI**: GPT-5.1, GPT-5-Mini, GPT-4.1
+- **Google**: Gemini 3.0 Pro, Gemini 3.0 Flash
+- **DeepSeek**: DeepSeek V3.2 Thinking
+- **xAI**: Grok 4
+
+Via LiteLLM, additional providers are also supported:
+- Together AI, Groq, Mistral, Cohere, Azure OpenAI, AWS Bedrock, Ollama (local)
 
 ## License
 
