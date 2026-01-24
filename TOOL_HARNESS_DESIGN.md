@@ -2346,14 +2346,6 @@ class ToolCache:
 
 ---
 
-## Open Questions
-
-1. **Cache duration**: Should damage calcs be cached for 1 turn or until state changes? Current design uses state-change invalidation.
-
-2. **Subagent token limits**: If a model has a small context window, should we limit the number of tool calls or summarize tool results?
-
----
-
 ## Next Steps
 
 1. **Implement core tools** - Start with type effectiveness, damage calc, and matchup evaluation
