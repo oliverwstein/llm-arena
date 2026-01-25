@@ -33,6 +33,39 @@ def get_side_prefix(pokemon_id: str, perspective: str = "p1") -> str:
     return "The opposing "
 
 
+def _parse_hp_percent(hp_status: str) -> int | None:
+    """
+    Parse HP percentage from status string.
+
+    Formats:
+    - "75/100" -> 75 (our Pokemon, exact HP)
+    - "75%" -> 75 (opponent Pokemon, percentage)
+    - "0 fnt" -> 0
+    """
+    if not hp_status:
+        return None
+
+    # Remove status condition suffix (e.g., "75/100 brn" -> "75/100")
+    hp_part = hp_status.split()[0]
+
+    # Format: "X%" (percentage)
+    if hp_part.endswith("%"):
+        try:
+            return int(hp_part[:-1])
+        except ValueError:
+            return None
+
+    # Format: "X/Y" (exact HP)
+    if "/" in hp_part:
+        try:
+            current, max_hp = hp_part.split("/")
+            return round(int(current) / int(max_hp) * 100)
+        except (ValueError, ZeroDivisionError):
+            return None
+
+    return None
+
+
 def format_event(event: list[str], perspective: str = "p1") -> Optional[str]:
     """
     Convert a single protocol event to human-readable text.
@@ -87,36 +120,45 @@ def format_event(event: list[str], perspective: str = "p1") -> Optional[str]:
         pokemon = format_pokemon_name(event[1]) if len(event) > 1 else "???"
         prefix = get_side_prefix(event[1], perspective)
         hp_status = event[2] if len(event) > 2 else "???"
-        
+
         # Check for faint
         if hp_status.startswith("0") or "fnt" in hp_status:
             return None  # Handled by faint event
-        
+
+        # Parse HP percentage
+        hp_percent = _parse_hp_percent(hp_status)
+        hp_text = f" ({hp_percent}% HP remaining)" if hp_percent is not None else ""
+
         # Check for source
         source = None
         for part in event:
             if part.startswith("[from]"):
                 source = part[6:].strip()
                 break
-        
+
         if source:
-            return f"{prefix}{pokemon} was hurt by {source}!"
-        return f"{prefix}{pokemon} took damage!"
+            return f"{prefix}{pokemon} was hurt by {source}!{hp_text}"
+        return f"{prefix}{pokemon} took damage!{hp_text}"
     
     # Heal
     if cmd == '-heal':
         pokemon = format_pokemon_name(event[1]) if len(event) > 1 else "???"
         prefix = get_side_prefix(event[1], perspective)
-        
+        hp_status = event[2] if len(event) > 2 else "???"
+
+        # Parse HP percentage
+        hp_percent = _parse_hp_percent(hp_status)
+        hp_text = f" ({hp_percent}% HP remaining)" if hp_percent is not None else ""
+
         source = None
         for part in event:
             if part.startswith("[from]"):
                 source = part[6:].strip()
                 break
-        
+
         if source:
-            return f"{prefix}{pokemon} restored HP using its {source}!"
-        return f"{prefix}{pokemon} restored some HP!"
+            return f"{prefix}{pokemon} restored HP using its {source}!{hp_text}"
+        return f"{prefix}{pokemon} restored some HP!{hp_text}"
     
     # Faint
     if cmd == 'faint':

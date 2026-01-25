@@ -30,13 +30,6 @@ def format_pokemon(pokemon: Pokemon, full_info: bool = False) -> str:
         if pokemon.item:
             lines.append(f"  Item: {pokemon.item}")
 
-        # Moves (for your own Pokemon)
-        if pokemon.moves:
-            move_strs = []
-            for move in pokemon.moves.values():
-                move_strs.append(f"{move.id} ({move.type.name}, {move.base_power} BP)")
-            lines.append(f"  Moves: {', '.join(move_strs)}")
-
     return "\n".join(lines)
 
 
@@ -124,15 +117,6 @@ def format_battle_state(battle: Battle) -> str:
         if battle.opponent_active_pokemon.moves:
             known_moves = list(battle.opponent_active_pokemon.moves.keys())
             lines.append(f"  Known moves: {', '.join(known_moves)}")
-        lines.append("")
-
-    # Your bench (excluding fainted)
-    bench = [p for p in battle.team.values()
-             if p != battle.active_pokemon and not p.fainted]
-    if bench:
-        lines.append("YOUR BENCH:")
-        for pokemon in bench:
-            lines.append(f"  - {format_pokemon(pokemon)}")
         lines.append("")
 
     # Known opponent Pokemon
