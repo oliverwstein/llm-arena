@@ -69,9 +69,30 @@ def get_field_analysis(battle: AbstractBattle) -> dict:
                 "turns_remaining": count
             }
 
+    # Check grounded status for active Pokemon (affects Spikes, Toxic Spikes, terrain)
+    active = battle.active_pokemon
+    opponent = battle.opponent_active_pokemon
+
+    if active:
+        # Use poke-env's is_grounded if available, otherwise infer from types
+        if hasattr(battle, 'is_grounded'):
+            your_grounded = battle.is_grounded(active)
+        else:
+            # Flying types and Levitate are not grounded
+            flying = any(t and t.name == "FLYING" for t in active.types)
+            levitate = active.ability and "levitate" in active.ability.lower()
+            your_grounded = not (flying or levitate)
+        result["your_pokemon_grounded"] = your_grounded
+
+    if opponent:
+        flying = any(t and t.name == "FLYING" for t in opponent.types)
+        levitate = opponent.ability and "levitate" in str(opponent.ability).lower()
+        opponent_grounded = not (flying or levitate)
+        result["opponent_pokemon_grounded"] = opponent_grounded
+
     # Generate tactical notes
     notes = []
-    
+
     # Hazard damage on opponent switch
     if result["opponent_hazards"]:
         damage = 0
@@ -95,10 +116,15 @@ def get_field_analysis(battle: AbstractBattle) -> dict:
         spikes = result["your_hazards"].get("spikes", 0)
         if spikes:
             spikes_dmg = {1: 12.5, 2: 16.67, 3: 25}.get(spikes, 0)
-            notes.append(f"You take {spikes_dmg}% from Spikes on switch")
+            # Note: Spikes don't affect non-grounded Pokemon
+            notes.append(f"Grounded Pokemon take {spikes_dmg}% from Spikes on switch")
             damage += spikes_dmg
+        toxic_spikes = result["your_hazards"].get("toxic_spikes", 0)
+        if toxic_spikes:
+            poison_type = "Badly poisoned" if toxic_spikes >= 2 else "Poisoned"
+            notes.append(f"Grounded Pokemon get {poison_type} on switch")
         if damage:
-            notes.append(f"Total switch damage to you: ~{damage}%")
+            notes.append(f"Total switch damage to you: ~{damage}% (for grounded Pokemon)")
 
     # Screens
     if result["your_screens"]:

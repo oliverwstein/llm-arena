@@ -3,20 +3,24 @@
 from poke_env.player.player import AbstractBattle
 from ..event_formatter import format_events
 
+from .context import get_battle_context
+
 
 def get_battle_log(battle: AbstractBattle, format: str = "narrative", from_turn: int = 1) -> dict:
     """
     Get the complete battle log from Showdown.
     This is the OBJECTIVE record - exactly what happened.
-    
+
     Args:
         battle: Current battle state
         format: "narrative" (readable), "detailed" (structured), "raw" (protocol)
         from_turn: Start from this turn (default: 1)
     """
+    ctx = get_battle_context(battle)
     perspective = battle.player_role or "p1"
     turns = []
 
+    # Get all available observations, sorted by turn
     for turn_num in sorted(battle.observations.keys()):
         if turn_num < from_turn:
             continue
@@ -43,7 +47,36 @@ def get_battle_log(battle: AbstractBattle, format: str = "narrative", from_turn:
                 "protocol": ["|".join(event) for event in obs.events]
             })
 
-    return {"turns": turns, "current_turn": battle.turn}
+    # Include current_observation if it has events not yet in observations
+    if hasattr(battle, 'current_observation') and battle.current_observation:
+        current_obs = battle.current_observation
+        if hasattr(current_obs, 'events') and current_obs.events:
+            # Check if this turn is already in our turns list
+            current_turn_in_list = any(t["turn"] == battle.turn for t in turns)
+            if not current_turn_in_list and battle.turn >= from_turn:
+                if format == "narrative":
+                    event_text = format_events(current_obs.events, perspective)
+                    turns.append({
+                        "turn": battle.turn,
+                        "events": event_text
+                    })
+                elif format == "detailed":
+                    actions = _parse_actions(current_obs.events, perspective)
+                    turns.append({
+                        "turn": battle.turn,
+                        "actions": actions
+                    })
+                elif format == "raw":
+                    turns.append({
+                        "turn": battle.turn,
+                        "protocol": ["|".join(event) for event in current_obs.events]
+                    })
+
+    return {
+        "turns": turns,
+        "current_turn": battle.turn,
+        "context": "forced_switch" if ctx["force_switch"] else "normal"
+    }
 
 
 def get_turn_details(battle: AbstractBattle, turn: int) -> dict:

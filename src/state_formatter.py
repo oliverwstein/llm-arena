@@ -40,10 +40,26 @@ def format_pokemon(pokemon: Pokemon, full_info: bool = False) -> str:
     return "\n".join(lines)
 
 
-def format_move(move: Move) -> str:
+def format_move(move: Move, pokemon: Pokemon = None, battle = None) -> str:
     """Format a move option."""
-    pp_str = f"{move.current_pp}/{move.max_pp} PP" if move.current_pp is not None else ""
-    return f"{move.id} ({move.type.name}, {move.base_power} BP) {pp_str}".strip()
+    pp_info = "?/? PP"
+
+    # Check battle.last_request for actual PP values
+    if battle and battle.last_request:
+        request = battle.last_request
+        if 'active' in request and request['active']:
+            active_data = request['active'][0]
+            if 'moves' in active_data:
+                for req_move in active_data['moves']:
+                    req_id = req_move.get('id', '')
+                    # Handle Hidden Power: move.id is "hiddenpowerice" but request has "hiddenpower"
+                    if req_id == move.id or move.id.startswith(req_id):
+                        pp = req_move.get('pp', '?')
+                        maxpp = req_move.get('maxpp', '?')
+                        pp_info = f"{pp}/{maxpp} PP"
+                        break
+
+    return f"{move.id} ({move.type.name}, {move.base_power} BP) {pp_info}"
 
 
 def format_battle_state(battle: Battle) -> str:
@@ -64,14 +80,19 @@ def format_battle_state(battle: Battle) -> str:
     lines.append(f"=== Turn {battle.turn} ===")
     lines.append("")
 
-    # Check for forced switch (Pokemon fainted)
+    # Check for forced switch
     # force_switch is a bool in singles, list in doubles
     if isinstance(battle.force_switch, bool):
         is_forced_switch = battle.force_switch
     else:
         is_forced_switch = any(battle.force_switch) if battle.force_switch else False
     if is_forced_switch:
-        lines.append("*** YOUR POKEMON FAINTED - YOU MUST SWITCH ***")
+        # Distinguish between faint and self-switch (U-turn, Volt Switch, etc.)
+        active_fainted = battle.active_pokemon and battle.active_pokemon.fainted
+        if active_fainted:
+            lines.append("*** YOUR POKEMON FAINTED - YOU MUST SWITCH ***")
+        else:
+            lines.append("*** YOU MUST SWITCH (U-turn/Volt Switch/Baton Pass) ***")
         lines.append("")
 
     # Your active Pokemon
@@ -84,7 +105,7 @@ def format_battle_state(battle: Battle) -> str:
     if battle.available_moves and not is_forced_switch:
         lines.append("AVAILABLE MOVES:")
         for move in battle.available_moves:
-            lines.append(f"  - {format_move(move)}")
+            lines.append(f"  - {format_move(move, battle.active_pokemon, battle)}")
         lines.append("")
 
     # Available switches

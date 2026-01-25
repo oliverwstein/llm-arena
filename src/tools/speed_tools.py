@@ -2,19 +2,26 @@
 
 from poke_env.player.player import AbstractBattle
 
+from .context import check_move_context
+
 
 def get_speed_comparison(battle: AbstractBattle, move_name: str = None) -> dict:
     """
     Compare speed stats to determine who moves first.
     Accounts for paralysis, boosts, and priority moves.
-    
+
     Args:
         battle: Current battle state
         move_name: Optional move to check priority for
     """
+    # Check context first
+    context_error = check_move_context(battle)
+    if context_error:
+        return {"error": context_error}
+
     active = battle.active_pokemon
     opponent = battle.opponent_active_pokemon
-    
+
     if not active:
         return {"error": "No active Pokemon"}
     if not opponent:
@@ -71,23 +78,26 @@ def get_speed_comparison(battle: AbstractBattle, move_name: str = None) -> dict:
 
 def _calc_effective_speed(pokemon) -> float:
     """Calculate effective speed stat with boosts and status."""
-    # Base speed estimation
-    base_speed = pokemon.base_stats.get("spe", 80)
-    
+    # Use actual stats if available, otherwise estimate from base stats
+    if hasattr(pokemon, 'stats') and pokemon.stats and 'spe' in pokemon.stats:
+        base_speed = pokemon.stats['spe']
+    else:
+        # Fallback: estimate from base stats (level 100, 31 IVs, 0 EVs)
+        base_speed = ((2 * pokemon.base_stats.get("spe", 80) + 31) + 5)
+
     # Apply boost
     boost = pokemon.boosts.get("spe", 0)
     if boost >= 0:
         boost_mult = (2 + boost) / 2
     else:
         boost_mult = 2 / (2 - boost)
-    
-    # Estimate effective speed (simplified formula)
-    effective = ((2 * base_speed + 31) + 5) * boost_mult
-    
+
+    effective = base_speed * boost_mult
+
     # Apply paralysis
     if pokemon.status and pokemon.status.name == "PAR":
         effective *= 0.25  # Gen 4 paralysis quarters speed
-    
+
     return effective
 
 

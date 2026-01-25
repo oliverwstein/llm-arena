@@ -9,7 +9,7 @@ import litellm
 
 from .state_formatter import format_battle_state
 from .response_parser import parse_llm_response
-from .event_formatter import format_events
+from .event_formatter import get_recent_events
 from .tools.definitions import TOOL_DEFINITIONS
 from .tools.executor import execute_tool
 
@@ -120,8 +120,8 @@ class LLMPlayer(Player):
             self.decision_history[battle_id] = []
             self.battle_plans[battle_id] = {"goals": [], "predictions": {}}
 
-        # 1. Get previous turn events (objective, from Showdown)
-        prev_turn_events = self._get_previous_turn_events(battle)
+        # 1. Get recent events (objective, from Showdown)
+        prev_turn_events = get_recent_events(battle)
 
         # 2. Update previous turn's outcome (did prediction match reality?)
         self._update_previous_outcome(battle_id, prev_turn_events)
@@ -174,16 +174,6 @@ class LLMPlayer(Player):
         else:
             print(f"[{self.username}] Could not parse response: {result['action'][:200]}...")
             return self.choose_random_move(battle)
-
-    def _get_previous_turn_events(self, battle: AbstractBattle) -> str:
-        """Get formatted events from the previous turn (objective record)."""
-        prev_turn = battle.turn - 1
-        if prev_turn <= 0 or prev_turn not in battle.observations:
-            return ""
-
-        events = battle.observations[prev_turn].events
-        perspective = battle.player_role or "p1"
-        return format_events(events, perspective)
 
     def _update_previous_outcome(self, battle_id: str, prev_events: str):
         """Update the previous turn's decision with what actually happened."""

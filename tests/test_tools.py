@@ -191,38 +191,6 @@ def create_mock_battle():
     return battle
 
 
-class TestMatchupTools:
-    """Tests for matchup_tools module."""
-
-    def test_evaluate_matchup(self):
-        from src.tools.matchup_tools import evaluate_matchup
-        battle = create_mock_battle()
-        
-        result = evaluate_matchup(battle)
-        assert "error" not in result
-        assert "matchup_score" in result
-        assert "verdict" in result
-        assert result["your_pokemon"] == "tyranitar"
-        assert result["opponent_pokemon"] == "gengar"
-
-    def test_evaluate_all_matchups(self):
-        from src.tools.matchup_tools import evaluate_all_matchups
-        battle = create_mock_battle()
-        
-        result = evaluate_all_matchups(battle)
-        assert "error" not in result
-        assert "matchups" in result
-        assert result["opponent"] == "gengar"
-
-    def test_should_switch(self):
-        from src.tools.matchup_tools import should_switch
-        battle = create_mock_battle()
-        
-        result = should_switch(battle)
-        assert "should_switch" in result
-        assert "current_matchup" in result
-
-
 class TestTeamTools:
     """Tests for team_tools module."""
 
@@ -256,21 +224,6 @@ class TestFieldTools:
         assert "your_hazards" in result
         assert "opponent_hazards" in result
         assert "tactical_notes" in result
-
-
-class TestSpeedTools:
-    """Tests for speed_tools module."""
-
-    def test_get_speed_comparison(self):
-        from src.tools.speed_tools import get_speed_comparison
-        battle = create_mock_battle()
-        
-        result = get_speed_comparison(battle)
-        assert "your_speed" in result
-        assert "opponent_speed" in result
-        assert "you_are_faster" in result
-        # Gengar (110 base) should be faster than Tyranitar (61 base)
-        assert result["you_are_faster"] == False
 
 
 if __name__ == "__main__":

@@ -387,11 +387,11 @@ def format_event(event: list[str], perspective: str = "p1") -> Optional[str]:
 def format_events(events: list[list[str]], perspective: str = "p1") -> str:
     """
     Convert a list of protocol events to a human-readable narrative.
-    
+
     Args:
         events: List of events, each event is a list of strings
         perspective: Player perspective ('p1' or 'p2')
-    
+
     Returns:
         Multi-line string with the battle narrative
     """
@@ -400,5 +400,39 @@ def format_events(events: list[list[str]], perspective: str = "p1") -> str:
         formatted = format_event(event, perspective)
         if formatted:
             lines.append(formatted)
-    
+
     return "\n".join(lines)
+
+
+def get_recent_events(battle) -> str:
+    """Get the most recent battle events (what happened since last decision).
+
+    Uses battle.current_observation to get events for the current turn,
+    which works even during mid-turn decisions like forced switches.
+
+    Args:
+        battle: A poke-env AbstractBattle instance
+
+    Returns:
+        Formatted string of recent events
+    """
+    perspective = battle.player_role or "p1"
+
+    # Use current_observation which contains the current turn's events
+    # This works even during forced switches when observations[turn] isn't finalized
+    if hasattr(battle, 'current_observation') and battle.current_observation:
+        current_obs = battle.current_observation
+        if hasattr(current_obs, 'events') and current_obs.events:
+            event_text = format_events(current_obs.events, perspective)
+            if event_text.strip():
+                return event_text
+
+    # Fallback to observations dictionary
+    if battle.observations:
+        most_recent_turn = max(battle.observations.keys())
+        events = battle.observations[most_recent_turn].events
+        event_text = format_events(events, perspective)
+        if event_text.strip():
+            return event_text
+
+    return ""

@@ -5,17 +5,15 @@ from poke_env.player import Player
 from poke_env.player.player import AbstractBattle
 
 from .state_formatter import format_battle_state
-from .event_formatter import format_events
+from .event_formatter import get_recent_events
 from .response_parser import parse_llm_response
 from .tools import (
     damage_tools,
-    matchup_tools,
     team_tools,
     battle_log_tools,
     field_tools,
     type_tools,
     info_tools,
-    speed_tools,
 )
 
 
@@ -35,17 +33,21 @@ class HumanPlayer(Player):
         """Interactive move selection with tool access."""
         self._current_battle = battle
 
-        # Show what LLM would see
-        print("\n" + "=" * 60)
-        print(f"TURN {battle.turn}")
-        print("=" * 60)
+        # Auto-show team details on Turn 1 (before turn header)
+        if battle.turn == 1:
+            print("\n" + "=" * 60)
+            print("INITIAL TEAM STATE (Full Details):")
+            print("=" * 60)
+            # We import json at top of file, so we can use it
+            details = team_tools.get_full_team_details(battle)
+            print(json.dumps(details, indent=2, default=str))
+            print("=" * 60 + "\n")
 
-        # Previous turn events
-        perspective = battle.player_role or "p1"
-        if battle.turn > 1 and (battle.turn - 1) in battle.observations:
-            events = battle.observations[battle.turn - 1].events
+        # Show what LLM would see (recent events + current state)
+        event_text = get_recent_events(battle)
+        if event_text:
             print("\nWHAT HAPPENED:")
-            print(format_events(events, perspective))
+            print(event_text)
 
         print("\nCURRENT STATE:")
         print(format_battle_state(battle))
@@ -53,7 +55,7 @@ class HumanPlayer(Player):
         # Interactive prompt
         while True:
             print("\n[Commands: move <name>, switch <name>]")
-            print("[Tools: damage, matchup, matchups, switch?, team, opponent, log, field, speed, type, info]")
+            print("[Tools: state, damage, team, opponent, log, field, type, info]")
             print("[Type 'help' for details]")
             
             try:
@@ -86,9 +88,70 @@ class HumanPlayer(Player):
 
             print("Unknown command. Type 'help' for options.")
 
+    def _get_state_summary(self, battle: AbstractBattle) -> dict:
+        """Get a focused summary: your active, opponent's active (detailed), and all 6 opponent slots."""
+        result = {}
+
+        # Your active Pokemon
+        active = battle.active_pokemon
+        if active and not active.fainted:
+            result["your_active"] = {
+                "species": active.species,
+                "hp_percent": round(active.current_hp_fraction * 100, 1),
+                "status": active.status.name if active.status else None,
+                "boosts": {k: v for k, v in active.boosts.items() if v != 0} or None
+            }
+        else:
+            result["your_active"] = None
+
+        # Opponent's active Pokemon (detailed)
+        opp_active = battle.opponent_active_pokemon
+        if opp_active:
+            result["opponent_active"] = {
+                "species": opp_active.species,
+                "hp_percent": round(opp_active.current_hp_fraction * 100, 1),
+                "status": opp_active.status.name if opp_active.status else None,
+                "known_moves": [m.id for m in opp_active.moves.values()],
+                "known_ability": opp_active.ability,
+                "known_item": opp_active.item,
+                "boosts": {k: v for k, v in opp_active.boosts.items() if v != 0} or None
+            }
+        else:
+            result["opponent_active"] = None
+
+        # All 6 opponent slots
+        revealed = list(battle.opponent_team.values())
+        revealed_count = len(revealed)
+
+        opponent_team = []
+        for pokemon in revealed:
+            if pokemon.fainted:
+                status = "FNT"
+            elif pokemon.status:
+                status = pokemon.status.name
+            else:
+                status = None
+            opponent_team.append({
+                "species": pokemon.species,
+                "hp_percent": round(pokemon.current_hp_fraction * 100, 1),
+                "status": status
+            })
+
+        # Add UNKNOWN slots for unrevealed Pokemon
+        for _ in range(6 - revealed_count):
+            opponent_team.append({"species": "UNKNOWN"})
+
+        result["opponent_team"] = opponent_team
+
+        return result
+
     def _handle_tool_command(self, cmd: str, battle: AbstractBattle) -> dict | None:
         """Handle tool commands and return result, or None if not a tool command."""
-        
+
+        # State summary
+        if cmd == "state":
+            return self._get_state_summary(battle)
+
         # Damage tools
         if cmd == "damage":
             return damage_tools.calculate_all_damages(battle)
@@ -96,20 +159,11 @@ class HumanPlayer(Player):
             move_name = cmd[7:].strip()
             return damage_tools.calculate_damage(battle, move_name)
         
-        # Matchup tools
-        if cmd == "matchup":
-            return matchup_tools.evaluate_matchup(battle)
-        if cmd.startswith("matchup "):
-            pokemon_name = cmd[8:].strip()
-            return matchup_tools.evaluate_matchup(battle, pokemon_name)
-        if cmd == "matchups":
-            return matchup_tools.evaluate_all_matchups(battle)
-        if cmd == "switch?":
-            return matchup_tools.should_switch(battle)
-        
         # Team tools
         if cmd == "team":
             return team_tools.get_team_summary(battle)
+        if cmd in ["team details", "team full"]:
+            return team_tools.get_full_team_details(battle)
         if cmd.startswith("team "):
             pokemon_name = cmd[5:].strip()
             return team_tools.get_team_pokemon(battle, pokemon_name)
@@ -134,14 +188,7 @@ class HumanPlayer(Player):
         # Field tools
         if cmd == "field":
             return field_tools.get_field_analysis(battle)
-        
-        # Speed tools
-        if cmd == "speed":
-            return speed_tools.get_speed_comparison(battle)
-        if cmd.startswith("speed "):
-            move_name = cmd[6:].strip()
-            return speed_tools.get_speed_comparison(battle, move_name)
-        
+
         # Type tools
         if cmd.startswith("type "):
             parts = cmd[5:].strip().split()
@@ -159,6 +206,18 @@ class HumanPlayer(Player):
             return info_tools.get_move_details(move_name)
         if cmd.startswith("pokemon ") or cmd.startswith("info "):
             pokemon_name = cmd.split(" ", 1)[1].strip()
+            
+            # 1. Try our team first (Get detailed current state)
+            team_info = team_tools.get_team_pokemon(battle, pokemon_name)
+            if "error" not in team_info:
+                return team_info
+                
+            # 2. Try opponent team (Get revealed info)
+            opp_info = team_tools.get_opponent_pokemon(battle, pokemon_name)
+            if "error" not in opp_info:
+                return opp_info
+                
+            # 3. Fallback to generic species info
             return info_tools.get_pokemon_info(pokemon_name)
         if cmd == "info":
             return {"error": "Usage: info <pokemon_name> or pokemon <name>"}
@@ -172,18 +231,16 @@ ACTIONS:
   move <name>          Use a move (e.g., 'move earthquake')
   switch <name>        Switch Pokemon (e.g., 'switch gengar')
 
+STATE:
+  state                Your active, opponent's active (detailed), all 6 opponent slots
+
 DAMAGE TOOLS:
   damage               Calculate damage for all your moves
   damage <move>        Calculate damage for a specific move
 
-MATCHUP TOOLS:
-  matchup              Evaluate current matchup
-  matchup <pokemon>    Evaluate matchup for a different Pokemon
-  matchups             Evaluate all your Pokemon vs current opponent
-  switch?              Get advice on whether to switch
-
 TEAM TOOLS:
   team                 Summary of your entire team
+  team details         Full details of all team members
   team <pokemon>       Detailed info about one of your Pokemon
   opponent             Summary of opponent's revealed team
   opponent <pokemon>   Info about a specific opponent Pokemon
@@ -197,10 +254,6 @@ BATTLE LOG:
 
 FIELD TOOLS:
   field                Analyze field conditions (weather, hazards, screens)
-
-SPEED TOOLS:
-  speed                Compare speed stats
-  speed <move>         Check if you outspeed with a specific move (priority)
 
 TYPE TOOLS:
   type <t1> <t2>       Get all type matchups for types

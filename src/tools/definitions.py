@@ -74,56 +74,6 @@ TOOL_DEFINITIONS = [
         }
     },
 
-    # Speed and Priority Tools
-    {
-        "type": "function",
-        "function": {
-            "name": "get_speed_comparison",
-            "description": "Compare speed stats to determine who moves first. Accounts for paralysis, boosts, and priority moves.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "move_name": {
-                        "type": "string",
-                        "description": "Optional: check priority for a specific move"
-                    }
-                },
-                "required": []
-            }
-        }
-    },
-
-    # Matchup Assessment Tools
-    {
-        "type": "function",
-        "function": {
-            "name": "evaluate_matchup",
-            "description": "Evaluate how favorable the current matchup is. Positive score = favorable, negative = unfavorable. Uses the same formula as the heuristic baseline player.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "pokemon_name": {
-                        "type": "string",
-                        "description": "Optional: evaluate a different Pokemon from your team instead of the active one"
-                    }
-                },
-                "required": []
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "evaluate_all_matchups",
-            "description": "Evaluate matchup scores for your active Pokemon and all available switches against the current opponent.",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": []
-            }
-        }
-    },
-
     # Move Information Tools
     {
         "type": "function",

@@ -2,6 +2,8 @@
 
 from poke_env.player.player import AbstractBattle
 
+from .context import get_battle_context
+
 
 def get_team_pokemon(battle: AbstractBattle, pokemon_name: str) -> dict:
     """Get detailed info about one of your team members."""
@@ -42,12 +44,14 @@ def get_team_pokemon(battle: AbstractBattle, pokemon_name: str) -> dict:
         "moves": moves,
         "boosts": {k: v for k, v in pokemon.boosts.items() if v != 0},
         "types": [t.name.lower() for t in pokemon.types if t],
+        "stats": pokemon.stats,
         "base_stats": pokemon.base_stats
     }
 
 
 def get_team_summary(battle: AbstractBattle) -> dict:
     """Get summary of entire team status."""
+    ctx = get_battle_context(battle)
 
     active_mon = battle.active_pokemon
     active_info = None
@@ -83,12 +87,19 @@ def get_team_summary(battle: AbstractBattle) -> dict:
         else:
             alive_count += 1
 
-    return {
+    result = {
         "active": active_info,
         "bench": bench,
         "alive_count": alive_count,
         "fainted_count": fainted_count
     }
+
+    # Add context for forced switch situations
+    if ctx["force_switch"]:
+        result["status"] = "forced_switch"
+        result["available_switches"] = ctx["available_pokemon"]
+
+    return result
 
 
 def get_opponent_pokemon(battle: AbstractBattle, pokemon_name: str) -> dict:
@@ -183,3 +194,30 @@ def get_opponent_team_summary(battle: AbstractBattle) -> dict:
         "bench": bench,
         "max_pokemon_remaining": alive_count + unrevealed_count
     }
+
+
+def get_full_team_details(battle: AbstractBattle) -> dict:
+    """Get detailed info about the entire team (all pokemon)."""
+    
+    team_details = []
+    
+    # Sort: active first, then by species
+    active_mon = battle.active_pokemon
+    
+    # We can reuse the logic from get_team_pokemon but we need to pass the pokemon object directly
+    # Refactoring get_team_pokemon to use a helper would be cleaner, but for now we'll just duplicate the formatting logic
+    # or iterate by name and call get_team_pokemon. Calling by name is safer to reuse existing code.
+    
+    # Get all pokemon names
+    pokemon_names = [mon.species for mon in battle.team.values()]
+    
+    for name in pokemon_names:
+        details = get_team_pokemon(battle, name)
+        if "error" not in details:
+            # Mark if active simply for sorting/display
+            if details.get("is_active"):
+                team_details.insert(0, details)
+            else:
+                team_details.append(details)
+                
+    return {"team": team_details}
