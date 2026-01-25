@@ -63,9 +63,11 @@ class PlayerFactory:
         name: str,
         model: str,
         temperature: float = 0.7,
-        max_tokens: int = 150,
+        max_tokens: int = 4096,
+        timeout: float = 60.0,
         force_fallback: bool = False,
         team_path: Optional[str] = None,
+        **kwargs
     ) -> tuple[Player, bool]:
         """
         Create a player, using LLM if available or fallback otherwise.
@@ -108,11 +110,13 @@ class PlayerFactory:
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                timeout=timeout,
                 account_configuration=account_config,
                 battle_format=self.battle_format,
                 team=team_to_use,
                 server_configuration=self.server_config,
                 battle_logger=self.battle_logger,
+                **kwargs
             )
             return player, True
         else:

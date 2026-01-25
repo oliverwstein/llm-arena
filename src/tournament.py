@@ -34,7 +34,8 @@ class ModelConfig:
     name: str           # Display name
     model: str          # LiteLLM model ID
     temperature: float = 0.7
-    max_tokens: int = 150
+    max_tokens: int = 4096        # Tool-calling needs more tokens
+    timeout: float = 60.0         # LLM timeout in seconds
     force_fallback: bool = False  # Force use of fallback bot
     team: Optional[str] = None    # Specific team path (optional)
 
@@ -80,6 +81,7 @@ def create_players(
             model=config.model,
             temperature=config.temperature,
             max_tokens=config.max_tokens,
+            timeout=config.timeout,
             force_fallback=config.force_fallback,
             team_path=config.team,
         )

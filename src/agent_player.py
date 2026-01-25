@@ -23,11 +23,13 @@ class AgentPlayer(Player):
         self,
         battle_logger: Optional["BattleLogger"] = None,
         verbose: bool = False,
+        team_name: str = "unknown",
         **kwargs
     ):
         super().__init__(**kwargs)
         self.battle_logger = battle_logger
         self.verbose = verbose
+        self.team_name = team_name
         
         # Per-battle state
         self.decision_history: dict[str, list[dict]] = {}  # battle_id -> decisions
@@ -162,7 +164,9 @@ class AgentPlayer(Player):
                     player_name=self.username,
                     model=getattr(self, "model", "human"),
                     opponent_name=opponent_name,
-                    opponent_model=None
+                    opponent_model=None,
+                    player_team=self.team_name,
+                    opponent_team="unknown"
                 )
                 
     def _update_previous_outcome(self, battle_id: str, prev_events: str):

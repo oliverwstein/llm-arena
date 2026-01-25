@@ -36,6 +36,7 @@ class ModelConfig:
     model: str
     temperature: float = 0.7
     max_tokens: int = 150
+    team: str = None
 
 
 def load_models_from_yaml(path: str) -> list[ModelConfig]:
@@ -50,6 +51,7 @@ def load_models_from_yaml(path: str) -> list[ModelConfig]:
             model=m["model"],
             temperature=m.get("temperature", 0.7),
             max_tokens=m.get("max_tokens", 150),
+            team=m.get("team"),
         ))
     return models
 
@@ -83,8 +85,33 @@ async def benchmark_model(
 
     # Create unique usernames for this session
     session_id = str(uuid.uuid4())[:8]
-    llm_username = f"LLM-{model_config.name}-{session_id}"[:18]  # Limit length for Showdown
+    llm_username = f"L-{session_id}-{model_config.name}"[:18]  # Limit length for Showdown
     heuristic_username = f"Heuristic-{session_id}"
+
+    # Determine team for LLM
+    llm_team = team_pool
+    if model_config.team:
+        team_path = Path(model_config.team)
+        if team_path.exists():
+            print(f"  Using specific team: {model_config.team}")
+            try:
+                team_content = team_path.read_text()
+                llm_team = team_pool.join_team(team_pool.parse_showdown_team(team_content))
+            except Exception as e:
+                print(f"  WARNING: Failed to parse team file {model_config.team}: {e}")
+                print(f"  Falling back to team pool.")
+        else:
+            print(f"  WARNING: Team file not found: {model_config.team}")
+            print(f"  Falling back to team pool.")
+            llm_team_name = "Random (Pool)"
+
+    if llm_team == team_pool:
+        llm_team_name = "Random (Pool)"
+    else:
+        llm_team_name = model_config.team
+
+    print(f"  LLM Team: {llm_team_name}")
+    print(f"  Heuristic Team: Random (Pool)")
 
     # Create players
     llm_player = LLMPlayer(
@@ -94,10 +121,11 @@ async def benchmark_model(
         max_tokens=model_config.max_tokens,
         timeout=timeout,
         battle_format=BATTLE_FORMAT,
-        team=team_pool,
+        team=llm_team,
         server_configuration=SERVER_CONFIG,
         verbose=verbose,
         battle_logger=battle_logger,
+        team_name=llm_team_name,
     )
 
     heuristic_player = SimpleHeuristicsPlayer(
@@ -180,12 +208,31 @@ Examples:
     models_to_run = []
 
     if args.model:
-        # Single model mode
-        models_to_run.append(ModelConfig(
-            name=args.name or args.model,
-            model=args.model,
-            max_tokens=args.max_tokens or 150,
-        ))
+        # Check if model exists in config first to get team/settings
+        try:
+            all_models = load_models_from_yaml(args.models)
+            matching_model = next((m for m in all_models if m.model == args.model or m.name == args.model), None)
+            
+            if matching_model:
+                # Use config but override CLI args
+                matching_model.max_tokens = args.max_tokens or matching_model.max_tokens
+                if args.name:
+                    matching_model.name = args.name
+                models_to_run.append(matching_model)
+            else:
+                # Fallback to raw config
+                models_to_run.append(ModelConfig(
+                    name=args.name or args.model,
+                    model=args.model,
+                    max_tokens=args.max_tokens or 150,
+                ))
+        except Exception as e:
+            print(f"Warning: Could not load config/models.yaml: {e}")
+            models_to_run.append(ModelConfig(
+                name=args.name or args.model,
+                model=args.model,
+                max_tokens=args.max_tokens or 150,
+            ))
     elif args.all or args.filter:
         # Load from config
         all_models = load_models_from_yaml(args.models)

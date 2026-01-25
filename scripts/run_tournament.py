@@ -18,15 +18,6 @@ from src.results import ResultsDB
 from src.battle_logger import BattleLogger
 
 
-# Default models to test
-DEFAULT_MODELS = [
-    ModelConfig(name="Claude-Sonnet-4.5", model="claude-sonnet-4-5-20251101"),
-    ModelConfig(name="GPT-5.1", model="gpt-5.1"),
-    ModelConfig(name="Gemini-3.0-Flash", model="gemini/gemini-3.0-flash"),
-    ModelConfig(name="DeepSeek-Reasoner", model="deepseek/deepseek-reasoner"),
-    ModelConfig(name="Grok-4", model="xai/grok-4"),
-]
-
 
 def load_models_from_yaml(path: str) -> list[ModelConfig]:
     """Load model configurations from YAML file."""
@@ -40,8 +31,9 @@ def load_models_from_yaml(path: str) -> list[ModelConfig]:
             name=m["name"],
             model=m["model"],
             temperature=m.get("temperature", 0.7),
-            max_tokens=m.get("max_tokens", 150),
+            max_tokens=m.get("max_tokens", 4096),  # Tool-calling needs more tokens
             force_fallback=m.get("force_fallback", False),
+            team=m.get("team"),
         ))
     return models
 
@@ -76,7 +68,7 @@ Environment:
     parser.add_argument("--name", default="LLM Battle Tournament", help="Tournament name")
     parser.add_argument("--format", default="gen4ou", help="Battle format")
     parser.add_argument("--battles", type=int, default=10, help="Battles per matchup")
-    parser.add_argument("--models", help="Path to models YAML config")
+    parser.add_argument("--models", default="config/models.yaml", help="Path to models YAML config")
     parser.add_argument("--teams-dir", default="Raw-Teams", help="Directory containing team files")
     parser.add_argument("--no-replays", action="store_true", help="Don't save replays")
     parser.add_argument("--db", default="results/battles.db", help="Results database path")
@@ -84,6 +76,9 @@ Environment:
     parser.add_argument("--fallback", choices=["random", "heuristic"], default="random",
                         help="Bot type to use when API key is missing (default: random)")
     parser.add_argument("--no-log", action="store_true", help="Disable battle logging")
+    parser.add_argument("--timeout", type=int, default=60, help="LLM timeout in seconds (default: 60)")
+    parser.add_argument("--max-tokens", type=int, help="Override max tokens for all models")
+    parser.add_argument("--filter", help="Only include models whose name contains this string")
 
     args = parser.parse_args()
     
@@ -93,10 +88,21 @@ Environment:
             print(f"Warning: Could not load env file: {args.env_file}")
 
     # Load models
-    if args.models:
-        models = load_models_from_yaml(args.models)
-    else:
-        models = DEFAULT_MODELS
+    models = load_models_from_yaml(args.models)
+
+    # Apply filter if specified
+    if args.filter:
+        models = [m for m in models if args.filter.lower() in m.name.lower()]
+        print(f"Filtered to {len(models)} models matching '{args.filter}'")
+
+    # Apply overrides
+    if args.max_tokens:
+        for m in models:
+            m.max_tokens = args.max_tokens
+
+    if len(models) < 2:
+        print("Error: Need at least 2 models for a tournament.")
+        sys.exit(1)
 
     # Initialize database
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)

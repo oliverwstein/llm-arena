@@ -31,7 +31,8 @@ class BattleEntry:
     battle_id: str
     player_name: str
     model: str
-    opponent: dict  # {name, model or "heuristic"}
+    opponent: dict  # {name, model or "heuristic", team or "unknown"}
+    team: str = "unknown"
     turns: list[dict] = field(default_factory=list)
     outcome: Optional[dict] = None  # {won, total_turns, forfeit}
     battle_plan: list[dict] = field(default_factory=list)  # Goals over time
@@ -85,7 +86,9 @@ class BattleLogger:
         player_name: str,
         model: str,
         opponent_name: str,
-        opponent_model: Optional[str] = None
+        opponent_model: Optional[str] = None,
+        player_team: str = "unknown",
+        opponent_team: str = "unknown"
     ) -> None:
         """
         Start tracking a new battle for a participant.
@@ -110,8 +113,10 @@ class BattleLogger:
             model=model,
             opponent={
                 "name": opponent_name,
-                "model": opponent_model or "heuristic"
+                "model": opponent_model or "heuristic",
+                "team": opponent_team
             },
+            team=player_team,
             started_at=self._now_iso()
         )
 
