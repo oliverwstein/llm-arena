@@ -154,7 +154,6 @@ TOOLS: dict[str, Tool] = {
     ),
 
     # Damage tools
-    # Damage tools
     "damage": Tool(
         name="damage",
         description="Calculate damage. Call without args for ALL moves, or provide 'move' for a specific move.",
@@ -247,7 +246,7 @@ TOOLS: dict[str, Tool] = {
     ),
     "plan_update": Tool(
         name="plan_update",
-        description="Update your strategic plan: add goals, mark complete, abandon, or add notes.",
+        description="Update your long-term strategic plan: add goals, mark complete, abandon, or add notes.",
         handler=_handle_plan_update,
         params=[
             ToolParam("action", "string", "Action to perform", enum=["add_goal", "complete_goal", "abandon_goal", "add_note"]),
