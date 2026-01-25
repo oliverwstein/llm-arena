@@ -10,6 +10,7 @@ from typing import Callable, Any, Optional
 from poke_env.player.player import AbstractBattle
 
 from . import type_tools, damage_tools, team_tools, battle_log_tools, field_tools, info_tools, plan_tools
+from ..state_formatter import get_battle_state
 
 
 @dataclass
@@ -71,39 +72,36 @@ def _handle_help(battle: AbstractBattle, args: dict, context: dict) -> dict:
 
 
 def _handle_damage(battle: AbstractBattle, args: dict, context: dict) -> dict:
+    move_name = args.get("move")
+    if move_name:
+        return damage_tools.calculate_damage(battle, move_name)
     return damage_tools.calculate_all_damages(battle)
 
 
-def _handle_damage_move(battle: AbstractBattle, args: dict, context: dict) -> dict:
-    return damage_tools.calculate_damage(battle, args.get("move", ""))
-
-
 def _handle_team(battle: AbstractBattle, args: dict, context: dict) -> dict:
+    pokemon_name = args.get("pokemon")
+    if pokemon_name:
+        return team_tools.get_team_pokemon(battle, pokemon_name)
+    if args.get("full"):
+        return team_tools.get_full_team_details(battle)
     return team_tools.get_team_summary(battle)
 
 
-def _handle_team_pokemon(battle: AbstractBattle, args: dict, context: dict) -> dict:
-    return team_tools.get_team_pokemon(battle, args.get("pokemon", ""))
-
-
 def _handle_opponent(battle: AbstractBattle, args: dict, context: dict) -> dict:
-    return team_tools.get_opponent_team_summary(battle)
-
-
-def _handle_opponent_pokemon(battle: AbstractBattle, args: dict, context: dict) -> dict:
-    return team_tools.get_opponent_pokemon(battle, args.get("pokemon", ""))
+    pokemon_name = args.get("pokemon")
+    if pokemon_name:
+        return team_tools.get_opponent_pokemon(battle, pokemon_name)
+    if args.get("full"):
+        return team_tools.get_opponent_team_summary(battle)
+    return team_tools.get_opponent_summary(battle)
 
 
 def _handle_log(battle: AbstractBattle, args: dict, context: dict) -> dict:
     return battle_log_tools.get_battle_log(
         battle,
-        args.get("format", "narrative"),
-        args.get("from_turn", 1)
+        args.get("from_turn", 0),
+        args.get("turn")
     )
-
-
-def _handle_turn(battle: AbstractBattle, args: dict, context: dict) -> dict:
-    return battle_log_tools.get_turn_details(battle, args.get("turn", 1))
 
 
 def _handle_field(battle: AbstractBattle, args: dict, context: dict) -> dict:
@@ -111,21 +109,14 @@ def _handle_field(battle: AbstractBattle, args: dict, context: dict) -> dict:
 
 
 def _handle_type(battle: AbstractBattle, args: dict, context: dict) -> dict:
-    return type_tools.get_type_effectiveness(
-        args.get("attack_type", ""),
-        args.get("defender_types", [])
-    )
-
-
-def _handle_type_pokemon(battle: AbstractBattle, args: dict, context: dict) -> dict:
     return type_tools.get_all_type_matchups(args.get("types", []))
 
 
-def _handle_pokemon(battle: AbstractBattle, args: dict, context: dict) -> dict:
+def _handle_pokedex(battle: AbstractBattle, args: dict, context: dict) -> dict:
     return info_tools.get_pokemon_info(args.get("pokemon", ""))
 
 
-def _handle_move(battle: AbstractBattle, args: dict, context: dict) -> dict:
+def _handle_movedex(battle: AbstractBattle, args: dict, context: dict) -> dict:
     return info_tools.get_move_details(args.get("move", ""))
 
 
@@ -144,6 +135,10 @@ def _handle_plan_update(battle: AbstractBattle, args: dict, context: dict) -> di
     )
 
 
+def _handle_state(battle: AbstractBattle, args: dict, context: dict) -> dict:
+    return get_battle_state(battle)
+
+
 # =============================================================================
 # Tool Registry
 # =============================================================================
@@ -159,67 +154,44 @@ TOOLS: dict[str, Tool] = {
     ),
 
     # Damage tools
+    # Damage tools
     "damage": Tool(
         name="damage",
-        description="Calculate damage for ALL your moves against the current opponent.",
+        description="Calculate damage. Call without args for ALL moves, or provide 'move' for a specific move.",
         handler=_handle_damage,
-        params=[],
-    ),
-    "damage_move": Tool(
-        name="damage_move",
-        description="Calculate damage for a specific move against the current opponent.",
-        handler=_handle_damage_move,
         params=[
-            ToolParam("move", "string", "Name of the move"),
+            ToolParam("move", "string", "Name of the specific move to calculate damage for", required=False),
         ],
     ),
 
     # Team tools
     "team": Tool(
         name="team",
-        description="Get HP/status summary of your entire team.",
+        description="Get team info. No args: summary. 'pokemon': specific mon details. 'full': detailed list of all.",
         handler=_handle_team,
-        params=[],
-    ),
-    "team_pokemon": Tool(
-        name="team_pokemon",
-        description="Get detailed info about one of your Pokemon (moves, item, ability, HP, status, boosts).",
-        handler=_handle_team_pokemon,
         params=[
-            ToolParam("pokemon", "string", "Name of your Pokemon"),
+            ToolParam("pokemon", "string", "Name of specific Pokemon to inspect", required=False),
+            ToolParam("full", "boolean", "Get full details for entire team", required=False),
         ],
     ),
     "opponent": Tool(
         name="opponent",
-        description="Get summary of opponent's revealed team (Pokemon, HP, status, known moves).",
+        description="Get opponent info. No args: active + fainted/unrevealed counts. 'full': all 6 slots. 'pokemon': specific mon details.",
         handler=_handle_opponent,
-        params=[],
-    ),
-    "opponent_pokemon": Tool(
-        name="opponent_pokemon",
-        description="Get known info about a specific opponent Pokemon.",
-        handler=_handle_opponent_pokemon,
         params=[
-            ToolParam("pokemon", "string", "Name of opponent's Pokemon"),
+            ToolParam("pokemon", "string", "Name of opponent's Pokemon to inspect", required=False),
+            ToolParam("full", "boolean", "Show all 6 slots with NOT_REVEALED for unseen Pokemon", required=False),
         ],
     ),
 
     # Battle log tools
     "log": Tool(
         name="log",
-        description="Get the battle log. Use format 'narrative' (readable), 'detailed' (structured), or 'raw' (Showdown protocol).",
+        description="Get the battle log as structured events. Use 'turn' for a specific turn only. Turn 0 contains initial switch events.",
         handler=_handle_log,
         params=[
-            ToolParam("format", "string", "Output format: narrative, detailed, or raw", required=False, enum=["narrative", "detailed", "raw"]),
-            ToolParam("from_turn", "integer", "Start from this turn number", required=False),
-        ],
-    ),
-    "turn": Tool(
-        name="turn",
-        description="Get detailed information about what happened on a specific turn.",
-        handler=_handle_turn,
-        params=[
-            ToolParam("turn", "integer", "Turn number to examine"),
+            ToolParam("turn", "integer", "Get a specific turn's events only", required=False),
+            ToolParam("from_turn", "integer", "Start from this turn number (default: 0)", required=False),
         ],
     ),
 
@@ -230,39 +202,36 @@ TOOLS: dict[str, Tool] = {
         handler=_handle_field,
         params=[],
     ),
+    "state": Tool(
+        name="state",
+        description="Get the full structured state summary of the battle (same as shown at the start of turn).",
+        handler=_handle_state,
+        params=[],
+    ),
 
     # Type tools
     "type": Tool(
         name="type",
-        description="Get damage multiplier for an attack type against defender type(s). Returns 0, 0.25, 0.5, 1, 2, or 4.",
+        description="Get type analysis: weaknesses, resistances, and immunities for a type combination.",
         handler=_handle_type,
         params=[
-            ToolParam("attack_type", "string", "The attacking type (e.g., 'fire')"),
-            ToolParam("defender_types", "array", "The defending Pokemon's types", items_type="string"),
-        ],
-    ),
-    "type_pokemon": Tool(
-        name="type_pokemon",
-        description="Get all type matchups for a Pokemon - what types it's weak to, resists, and immune to.",
-        handler=_handle_type_pokemon,
-        params=[
-            ToolParam("types", "array", "The Pokemon's type(s)", items_type="string"),
+            ToolParam("types", "array", "The types to analyze (e.g. ['fire', 'flying'])", items_type="string"),
         ],
     ),
 
     # Info tools
-    "pokemon": Tool(
-        name="pokemon",
+    "pokedex": Tool(
+        name="pokedex",
         description="Look up base stats, types, abilities, and typical role for a Pokemon species.",
-        handler=_handle_pokemon,
+        handler=_handle_pokedex,
         params=[
             ToolParam("pokemon", "string", "Pokemon species name"),
         ],
     ),
-    "move": Tool(
-        name="move",
-        description="Look up move details (power, accuracy, type, effects). Syntax: 'moveinfo <name>'",
-        handler=_handle_move,
+    "movedex": Tool(
+        name="movedex",
+        description="Look up move details (power, accuracy, type, effects). Syntax: 'movedex <name>'",
+        handler=_handle_movedex,
         params=[
             ToolParam("move", "string", "Move name"),
         ],
@@ -363,74 +332,65 @@ def parse_command(text: str) -> tuple[str, dict]:
     # Damage
     if cmd == "damage":
         if rest:
-            return "damage_move", {"move": " ".join(rest)}
+            return "damage", {"move": " ".join(rest)}
         return "damage", {}
 
     # Team
     if cmd == "team":
         if rest:
-            return "team_pokemon", {"pokemon": " ".join(rest)}
+            if rest[0] == "full":
+                return "team", {"full": True}
+            return "team", {"pokemon": " ".join(rest)}
         return "team", {}
 
-    # Opponent
+    # Opponent - "opponent" (summary), "opponent full" (all 6 slots), "opponent <name>" (specific)
     if cmd == "opponent":
         if rest:
-            return "opponent_pokemon", {"pokemon": " ".join(rest)}
+            if rest[0] == "full":
+                return "opponent", {"full": True}
+            return "opponent", {"pokemon": " ".join(rest)}
         return "opponent", {}
 
-    # Log
+    # Log - supports getting a specific turn: "log" (all), "log 3" (turn 3 only)
     if cmd == "log":
         args = {}
         if rest:
-            args["format"] = rest[0]
-            if len(rest) > 1:
-                try:
-                    args["from_turn"] = int(rest[1])
-                except ValueError:
-                    pass
-        return "log", args
-
-    # Turn
-    if cmd == "turn":
-        if rest:
             try:
-                return "turn", {"turn": int(rest[0])}
+                args["turn"] = int(rest[0])
             except ValueError:
                 pass
-        return "turn", {"turn": 1}
+        return "log", args
+
 
     # Field
     if cmd == "field":
         return "field", {}
 
+    # State
+    if cmd == "state":
+        return "state", {}
+
     # Type
     if cmd == "type":
-        if not rest:
-            return "help", {"tool": "type"}
-        if "vs" in rest:
-            vs_idx = rest.index("vs")
-            attack_type = rest[0] if vs_idx > 0 else ""
-            defender_types = rest[vs_idx + 1:]
-            return "type", {"attack_type": attack_type, "defender_types": defender_types}
-        else:
-            # Interpret as pokemon types for matchup
-            return "type_pokemon", {"types": rest}
+        if rest:
+            return "type", {"types": rest}
+        return "help", {"tool": "type"}
 
     # Pokemon info
-    if cmd == "pokemon" or cmd == "info":
+    if cmd == "pokedex" or cmd == "pokemon" or cmd == "info":
         if rest:
-            return "pokemon", {"pokemon": " ".join(rest)}
-        return "help", {"tool": "pokemon"}
+            return "pokedex", {"pokemon": " ".join(rest)}
+        return "help", {"tool": "pokedex"}
 
-    # Move info - use "moveinfo <name>" to avoid conflict with "move <name>" action
+    # Move info - use "movedex <name>" to avoid conflict with "move <name>" action
     # Also support legacy "move <name> info" syntax
-    if cmd == "moveinfo":
+    if cmd == "movedex" or cmd == "moveinfo":
         if rest:
-            return "move", {"move": " ".join(rest)}
-        return "help", {"tool": "move"}
+            return "movedex", {"move": " ".join(rest)}
+        return "help", {"tool": "movedex"}
     if cmd == "move" and rest and rest[-1] == "info":
-        # "move earthquake info" -> move info for earthquake
-        return "move", {"move": " ".join(rest[:-1])}
+        # "move earthquake info" -> movedex earthquake
+        return "movedex", {"move": " ".join(rest[:-1])}
 
     # Plan
     if cmd == "plan":
@@ -513,14 +473,13 @@ def get_help_text() -> str:
     """
     lines = ["AVAILABLE TOOLS:", ""]
 
-    # Group by category (with command syntax notes)
     categories = {
-        "Damage": ["damage", "damage_move"],
-        "Team": ["team", "team_pokemon", "opponent", "opponent_pokemon"],
-        "Battle Log": ["log", "turn"],
-        "Field": ["field"],
-        "Type": ["type", "type_pokemon"],
-        "Info": ["pokemon", "move"],  # Note: use "moveinfo <name>" to avoid conflict with action
+        "Damage": ["damage"],
+        "Team": ["team", "opponent"],
+        "Battle Log": ["log"],
+        "Field": ["field", "state"],
+        "Type": ["type"],
+        "Info": ["pokedex", "movedex"],  # Note: use "movedex <name>" to avoid conflict with action
         "Planning": ["plan", "plan_update"],
         "Help": ["help"],
     }

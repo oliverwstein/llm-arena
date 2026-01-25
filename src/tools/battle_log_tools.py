@@ -1,21 +1,25 @@
 """Battle log tools for historical event queries."""
 
 from poke_env.player.player import AbstractBattle
-from ..event_formatter import format_events
+from ..event_formatter import format_event
 
 from .context import get_battle_context
 
 
-def get_battle_log(battle: AbstractBattle, format: str = "narrative", from_turn: int = 1) -> dict:
+def get_battle_log(battle: AbstractBattle, from_turn: int = 0, turn: int = None) -> dict:
     """
-    Get the complete battle log from Showdown.
+    Get the battle log from Showdown as a list of formatted event strings.
     This is the OBJECTIVE record - exactly what happened.
 
     Args:
         battle: Current battle state
-        format: "narrative" (readable), "detailed" (structured), "raw" (protocol)
-        from_turn: Start from this turn (default: 1)
+        from_turn: Start from this turn (default: 0 to include initial switch events)
+        turn: If specified, get only this specific turn's events
     """
+    # If a specific turn is requested, return just that turn's events
+    if turn is not None:
+        return _get_single_turn(battle, turn)
+    
     ctx = get_battle_context(battle)
     perspective = battle.player_role or "p1"
     turns = []
@@ -26,26 +30,11 @@ def get_battle_log(battle: AbstractBattle, format: str = "narrative", from_turn:
             continue
 
         obs = battle.observations[turn_num]
-
-        if format == "narrative":
-            event_text = format_events(obs.events, perspective)
-            turns.append({
-                "turn": turn_num,
-                "events": event_text
-            })
-
-        elif format == "detailed":
-            actions = _parse_actions(obs.events, perspective)
-            turns.append({
-                "turn": turn_num,
-                "actions": actions
-            })
-
-        elif format == "raw":
-            turns.append({
-                "turn": turn_num,
-                "protocol": ["|".join(event) for event in obs.events]
-            })
+        events = _format_events_as_list(obs.events, perspective)
+        turns.append({
+            "turn": turn_num,
+            "events": events
+        })
 
     # Include current_observation if it has events not yet in observations
     if hasattr(battle, 'current_observation') and battle.current_observation:
@@ -54,23 +43,11 @@ def get_battle_log(battle: AbstractBattle, format: str = "narrative", from_turn:
             # Check if this turn is already in our turns list
             current_turn_in_list = any(t["turn"] == battle.turn for t in turns)
             if not current_turn_in_list and battle.turn >= from_turn:
-                if format == "narrative":
-                    event_text = format_events(current_obs.events, perspective)
-                    turns.append({
-                        "turn": battle.turn,
-                        "events": event_text
-                    })
-                elif format == "detailed":
-                    actions = _parse_actions(current_obs.events, perspective)
-                    turns.append({
-                        "turn": battle.turn,
-                        "actions": actions
-                    })
-                elif format == "raw":
-                    turns.append({
-                        "turn": battle.turn,
-                        "protocol": ["|".join(event) for event in current_obs.events]
-                    })
+                events = _format_events_as_list(current_obs.events, perspective)
+                turns.append({
+                    "turn": battle.turn,
+                    "events": events
+                })
 
     return {
         "turns": turns,
@@ -79,89 +56,38 @@ def get_battle_log(battle: AbstractBattle, format: str = "narrative", from_turn:
     }
 
 
-def get_turn_details(battle: AbstractBattle, turn: int) -> dict:
-    """Get detailed information about a specific turn."""
-
+def _get_single_turn(battle: AbstractBattle, turn: int) -> dict:
+    """Get events for a specific turn."""
+    # Check if turn exists in observations
     if turn not in battle.observations:
-        return {"error": f"Turn {turn} not found. Battle is on turn {battle.turn}."}
+        # Also check current_observation for the current turn
+        if turn == battle.turn and hasattr(battle, 'current_observation') and battle.current_observation:
+            obs = battle.current_observation
+        else:
+            return {"error": f"Turn {turn} not found. Battle is on turn {battle.turn}."}
+    else:
+        obs = battle.observations[turn]
 
-    obs = battle.observations[turn]
     perspective = battle.player_role or "p1"
-
+    events = _format_events_as_list(obs.events, perspective)
+    
     return {
         "turn": turn,
-        "events_narrative": format_events(obs.events, perspective),
-        "events_detailed": _parse_actions(obs.events, perspective),
-        "events_raw": ["|".join(event) for event in obs.events]
+        "events": events,
+        "current_turn": battle.turn
     }
 
 
-def _parse_actions(events: list, perspective: str) -> list:
-    """Parse raw events into structured action list."""
-    actions = []
-
+def _format_events_as_list(events: list, perspective: str) -> list[str]:
+    """
+    Format raw protocol events into a list of human-readable strings.
+    
+    Uses the same formatting as event_formatter.format_events, but returns
+    a list instead of a newline-joined string.
+    """
+    result = []
     for event in events:
-        if not event or len(event) < 2:
-            continue
-
-        # Normalize event format: poke-env events have empty first element
-        if event[0] == '':
-            event = event[1:]
-        
-        event_type = event[0] if event else ""
-
-        if event_type == "move":
-            actions.append({
-                "type": "move",
-                "pokemon": event[1].split(": ")[-1] if len(event) > 1 else "",
-                "move": event[2] if len(event) > 2 else "",
-                "target": event[3].split(": ")[-1] if len(event) > 3 else ""
-            })
-
-        elif event_type == "-damage":
-            pokemon = event[1].split(": ")[-1] if len(event) > 1 else ""
-            hp = event[2] if len(event) > 2 else ""
-            actions.append({
-                "type": "damage",
-                "pokemon": pokemon,
-                "hp_after": hp
-            })
-
-        elif event_type == "-heal":
-            pokemon = event[1].split(": ")[-1] if len(event) > 1 else ""
-            hp = event[2] if len(event) > 2 else ""
-            actions.append({
-                "type": "heal",
-                "pokemon": pokemon,
-                "hp_after": hp
-            })
-
-        elif event_type == "switch":
-            pokemon = event[1].split(": ")[-1] if len(event) > 1 else ""
-            hp = event[3] if len(event) > 3 else ""
-            actions.append({
-                "type": "switch",
-                "pokemon": pokemon,
-                "hp": hp
-            })
-
-        elif event_type == "faint":
-            pokemon = event[1].split(": ")[-1] if len(event) > 1 else ""
-            actions.append({
-                "type": "faint",
-                "pokemon": pokemon
-            })
-
-        elif event_type == "-status":
-            pokemon = event[1].split(": ")[-1] if len(event) > 1 else ""
-            status = event[2] if len(event) > 2 else ""
-            actions.append({
-                "type": "status",
-                "pokemon": pokemon,
-                "status": status
-            })
-
-        elif event_type in ["-supereffective", "-resisted", "-crit", "-miss"]:
-            actions.append({"type": event_type.lstrip("-")})
-
-    return actions
+        formatted = format_event(event, perspective)
+        if formatted:
+            result.append(formatted)
+    return result

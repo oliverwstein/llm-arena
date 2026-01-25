@@ -94,10 +94,9 @@ def format_event(event: list[str], perspective: str = "p1") -> Optional[str]:
     if cmd in ('', 'upkeep', 'request', 't:', 'c:', 'debug', 'inactive', 'inactiveoff'):
         return None
     
-    # Turn marker
+    # Turn marker - skip these since turns are already structured in the log
     if cmd == 'turn':
-        turn_num = event[1] if len(event) > 1 else "?"
-        return f"\n=== Turn {turn_num} ===\n"
+        return None
     
     # Move used
     if cmd == 'move':
@@ -112,8 +111,8 @@ def format_event(event: list[str], perspective: str = "p1") -> Optional[str]:
         prefix = get_side_prefix(event[1], perspective)
         action = "sent out" if cmd == 'switch' else "was dragged out!"
         if prefix:
-            return f"{prefix.strip()} sent out {pokemon}!"
-        return f"Go! {pokemon}!"
+            return f"{prefix.strip()} trainer sent out {pokemon}!"
+        return f"You sent out {pokemon}!"
     
     # Damage
     if cmd == '-damage':

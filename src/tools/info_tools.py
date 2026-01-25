@@ -2,6 +2,8 @@
 
 from poke_env.data import GenData
 
+from .type_tools import get_all_type_matchups
+
 
 def get_move_details(move_name: str, gen: int = 4) -> dict:
     """
@@ -133,6 +135,15 @@ def get_pokemon_info(pokemon_name: str, gen: int = 4) -> dict:
         # Add role hints based on stats
         result["role_hints"] = _infer_role(result["base_stats"])
         
+        # Add type matchup info
+        type_info = get_all_type_matchups(result["types"], gen=gen)
+        if "error" not in type_info:
+            result.update({
+                "weaknesses": type_info.get("weaknesses", {}),
+                "resistances": type_info.get("resistances", {}),
+                "immunities": type_info.get("immunities", [])
+            })
+
         return result
         
     except Exception as e:

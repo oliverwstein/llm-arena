@@ -1,89 +1,92 @@
 """Human-controlled player for testing the tool harness experience."""
 
 import json
-from poke_env.player import Player
-from poke_env.player.player import AbstractBattle
-
-from .state_formatter import format_battle_state
-from .event_formatter import get_recent_events
 from .response_parser import parse_llm_response
-from .tools.registry import parse_command, execute_tool
-from .tools import team_tools  # Still needed for initial team display
+from .tools.registry import parse_command, execute_tool, TOOLS
+from .agent_player import AgentPlayer
 
 
-class HumanPlayer(Player):
+class HumanPlayer(AgentPlayer):
     """
-    Human-controlled player for testing the tool harness experience.
-
-    Lets you experience exactly what the LLM sees and interact with
-    tools from the terminal. Uses the same tool registry as LLMPlayer.
+    Human-controlled player for testing the tool harness and LLM experience.
+    Mirroring the LLM's context and capabilities.
     """
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._current_battle = None
-        self._battle_plans: dict[str, dict] = {}  # battle_id -> {goals: [], predictions: {}}
 
-    def _get_context(self) -> dict:
-        """Get context dict for tool execution (includes battle plan)."""
-        if self._current_battle:
-            battle_id = self._current_battle.battle_tag
-            if battle_id not in self._battle_plans:
-                self._battle_plans[battle_id] = {"goals": [], "predictions": {}}
-            return {"battle_plan": self._battle_plans[battle_id]}
-        return {}
-
-    async def choose_move(self, battle: AbstractBattle) -> str:
-        """Interactive move selection with tool access."""
-        self._current_battle = battle
-
-        # Auto-show team details on Turn 1 (before turn header)
+    async def _make_decision(self, context: dict) -> dict:
+        """
+        Interactive decision making.
+        Displays context exactly as LLM sees it, then accepts commands.
+        """
+        battle = context["battle"]
+        battle_plan = context["battle_plan"]
+        
+        # 1. Show Context (Mirroring LLM Prompt)
+        print("\n" + "=" * 60)
+        print(f"TURN {battle.turn} CONTEXT")
+        print("=" * 60)
+        
         if battle.turn == 1:
-            print("\n" + "=" * 60)
-            print("INITIAL TEAM STATE (Full Details):")
-            print("=" * 60)
-            # We import json at top of file, so we can use it
-            details = team_tools.get_full_team_details(battle)
-            print(json.dumps(details, indent=2, default=str))
-            print("=" * 60 + "\n")
+            print("\n[System] Initial Team Details Available via 'team full'")
 
-        # Show what LLM would see (recent events + current state)
-        event_text = get_recent_events(battle)
-        if event_text:
-            print("\nWHAT HAPPENED:")
-            print(event_text)
+        # Event Stream
+        if context["prev_events"]:
+            print("\n--- PREVIOUS TURN EVENTS ---")
+            print(context["prev_events"])
+            
+        # Current State
+        print("\n--- CURRENT STATE ---")
+        print(context["current_state"])
+            
+        # Decision History
+        if context["decision_history_str"]:
+            print("\n--- DECISION HISTORY ---")
+            print(context["decision_history_str"])
+            
+        # Strategic Plan
+        plan_text = self._format_battle_plan(battle_plan)
+        if plan_text:
+            print("\n--- STRATEGIC PLAN ---")
+            print(plan_text)
+            
+        print("\n" + "=" * 60)
 
-        print("\nCURRENT STATE:")
-        print(format_battle_state(battle))
-
-        # Interactive prompt
+        # 2. Interactive Loop
         while True:
-            print("\n[Commands: move <name>, switch <name>]")
-            print("[Tools: help, damage, team, opponent, log, field, type, pokemon, moveinfo, plan]")
-
+            # Show available tools (same as LLM)
+            print(f"\n[Tools: {', '.join(TOOLS.keys())}]")
+            print("[Commands: move <name>, switch <name>]")
+            
             try:
                 user_input = input("> ").strip()
             except EOFError:
-                # Non-interactive mode - use random move
-                return self.choose_random_move(battle)
+                return {"action": ""}  # Triggers random fallback
 
             if not user_input:
                 continue
 
             # Check for action commands
             if user_input.lower().startswith(("move ", "switch ")):
-                # But not "move <name>" for move info - that needs a different check
-                # If it looks like an action (move/switch followed by pokemon/move name), try parsing
-                action = parse_llm_response(user_input, battle)
-                if action:
-                    return self.create_order(action)
-                # If parsing failed, maybe it's a tool command like "move earthquake" for move info
-                # Fall through to tool handling
+                # Return action content. 
+                # Ideally we'd ask for reasoning/prediction too to match LLM structure
+                # For now, let's just assume empty reasoning or parse it if they use | syntax?
+                # Let's keep it simple: Action is the command.
+                return {
+                    "action": user_input,
+                    "reasoning": "Human decision",
+                    "prediction": ""
+                }
 
-            # Check for tool commands via unified registry
+            # Check for tool commands
             tool_name, tool_args = parse_command(user_input)
             if tool_name:
-                result_json = execute_tool(tool_name, tool_args, battle, self._get_context())
+                # We need to pass the context dict which contains 'battle_plan'
+                # AgentPlayer prepares 'battle_plan' in the context dict passed to this method
+                tool_context = {"battle_plan": battle_plan}
+                
+                result_json = execute_tool(tool_name, tool_args, battle, tool_context)
                 self._print_tool_result(tool_name, result_json)
                 continue
 

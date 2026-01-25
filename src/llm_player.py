@@ -1,21 +1,19 @@
 """LLM-powered Pokemon battle player with tool-calling capabilities."""
 
 import json
-import random
 import time
 from typing import Optional, TYPE_CHECKING
-from poke_env.player import Player
-from poke_env.player.player import Battle, AbstractBattle
-from poke_env import ServerConfiguration, AccountConfiguration
+from poke_env import ServerConfiguration
+
 import litellm
 
-from .state_formatter import format_battle_state
+from .agent_player import AgentPlayer
 from .response_parser import parse_llm_response
-from .event_formatter import get_recent_events
 from .tools.registry import get_llm_tool_definitions, execute_tool, get_help_text
 
 if TYPE_CHECKING:
     from .battle_logger import BattleLogger
+    from poke_env.player.player import AbstractBattle
 
 
 # Custom server configuration for port 8088
@@ -68,19 +66,14 @@ Available actions:
 - switch <name>: Switch to a Pokemon from your bench"""
 
 
-class LLMPlayer(Player):
+class LLMPlayer(AgentPlayer):
     """
     A Pokemon battle player powered by an LLM with tool-calling capabilities.
 
     Uses a subagent architecture where tool calls are ephemeral per turn,
     preventing context explosion while allowing thorough analysis.
 
-    Uses LiteLLM for multi-provider support. Compatible with:
-    - OpenAI (gpt-4o, gpt-4-turbo, etc.)
-    - Anthropic (claude-3-opus, claude-sonnet-4-20250514, etc.)
-    - Google (gemini/gemini-pro, gemini/gemini-1.5-flash, etc.)
-    - xAI (xai/grok-2, etc.)
-    - Local models via Ollama (ollama/llama3, etc.)
+    Uses LiteLLM for multi-provider support.
     """
 
     def __init__(
@@ -97,27 +90,14 @@ class LLMPlayer(Player):
     ):
         """
         Initialize an LLM player.
-
-        Args:
-            model: LiteLLM model identifier (e.g., "gpt-4o", "claude-sonnet-4-20250514")
-            temperature: Sampling temperature for the LLM
-            max_tokens: Maximum tokens in response
-            timeout: API call timeout in seconds
-            system_prompt: Custom system prompt (optional)
-            verbose: If True, print full LLM responses and tool calls
-            max_tool_calls: Maximum tool calls per turn (default: 8)
-            battle_logger: Optional BattleLogger for comprehensive output logging
-            **kwargs: Additional arguments passed to poke_env.Player
         """
-        super().__init__(**kwargs)
+        super().__init__(battle_logger=battle_logger, verbose=verbose, **kwargs)
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.timeout = timeout
         self.system_prompt = system_prompt
-        self.verbose = verbose
         self.max_tool_calls = max_tool_calls
-        self.battle_logger = battle_logger
 
         # Multi-provider compatibility: Disable tools for reasoning models that don't support them well
         self.use_tools = True
@@ -128,172 +108,36 @@ class LLMPlayer(Player):
             if self.verbose:
                 print(f"[{self.username}] Tools disabled for reasoning model: {model}")
 
-        # Per-battle state (persistent across turns)
-        self.decision_history: dict[str, list[dict]] = {}  # battle_id -> decisions
-        self.battle_plans: dict[str, dict] = {}  # battle_id -> {goals: [], predictions: {}}
-
-    async def choose_move(self, battle: AbstractBattle) -> str:
+    async def _make_decision(self, context: dict) -> dict:
         """
-        Choose a move using subagent with tools and strategic planning.
-
-        This is called by poke-env each turn. We:
-        1. Get previous turn events (objective record)
-        2. Update previous turn's outcome
-        3. Format current state
-        4. Run reasoning subagent with tools (ephemeral context)
-        5. Record decision with reasoning
-        6. Log turn data
-        7. Return valid order
+        Run reasoning subagent with tools.
         """
-        battle_id = battle.battle_tag
-
-        # Initialize per-battle state
-        if battle_id not in self.decision_history:
-            self.decision_history[battle_id] = []
-            self.battle_plans[battle_id] = {"goals": [], "predictions": {}}
-            # Start logging for this battle
-            if self.battle_logger:
-                # Determine opponent info (best effort - may not know model)
-                opponent_name = "opponent"
-                for player in [battle.player_username, battle.opponent_username]:
-                    if player and player != self.username:
-                        opponent_name = player
-                        break
-                self.battle_logger.start_battle(
-                    battle_id=battle_id,
-                    player_name=self.username,
-                    model=self.model,
-                    opponent_name=opponent_name,
-                    opponent_model=None  # We don't know opponent's model
-                )
-
-        # 1. Get recent events (objective, from Showdown)
-        prev_turn_events = get_recent_events(battle)
-
-        # 2. Update previous turn's outcome (did prediction match reality?)
-        self._update_previous_outcome(battle_id, prev_turn_events)
-
-        # 3. Format current state
-        current_state = format_battle_state(battle)
-
-        # 4. Format decision history with reasoning
-        decision_summary = self._format_decision_history(battle_id)
-
-        # 5. Get current strategic plan
-        battle_plan = self.battle_plans[battle_id]
-
-        # 6. Run reasoning subagent (ephemeral context)
+        # Format strategic plan (using helper from base class)
+        # Actually the base class helper _format_battle_plan is an instance method, 
+        # but _run_reasoning_subagent expects the formatted string in the prompt construction?
+        # Let's check _run_reasoning_subagent below. It calls _format_battle_plan internally.
+        
         result = await self._run_reasoning_subagent(
-            battle=battle,
-            prev_turn_events=prev_turn_events,
-            current_state=current_state,
-            decision_history=decision_summary,
-            battle_plan=battle_plan
+            battle=context["battle"],
+            prev_turn_events=context["prev_events"],
+            current_state=context["current_state"],
+            decision_history=context["decision_history_str"],
+            battle_plan=context["battle_plan"]
         )
 
-        # 7. Record decision with reasoning (outcome added next turn)
-        self.decision_history[battle_id].append({
-            "turn": battle.turn,
-            "action": result["action"],
-            "reasoning": result.get("reasoning", ""),
-            "prediction": result.get("prediction", ""),
-            "outcome": None  # Filled in next turn
-        })
-
-        # 8. Update strategic plan if subagent modified it
-        if "plan_updates" in result:
-            self._apply_plan_updates(battle_id, result["plan_updates"])
-
-        # 9. Log turn data
-        if self.battle_logger:
-            self.battle_logger.log_turn(
-                battle_id=battle_id,
-                player_name=self.username,
-                turn=battle.turn,
-                observation=prev_turn_events or "(Battle just started)",
-                state=current_state,
-                raw_response=result.get("raw_response", ""),
-                tool_calls=result.get("tool_calls", []),
-                parsed={
-                    "action": result.get("action", ""),
-                    "reasoning": result.get("reasoning", ""),
-                    "prediction": result.get("prediction", "")
-                },
-                tokens=result.get("tokens", {}),
-                latency_ms=result.get("latency_ms", 0),
-                battle_plan=self.battle_plans[battle_id].get("goals", [])
-            )
-
-        # 10. Parse and return
-        action = parse_llm_response(result["action"], battle)
-
         if self.verbose:
-            print(f"\n[{self.username}] === Turn {battle.turn} ===")
+            print(f"\n[{self.username}] === Turn {context['battle'].turn} ===")
             print(f"[{self.username}] Action: {result['action']}")
             print(f"[{self.username}] Reasoning: {result.get('reasoning', 'N/A')}")
             print(f"[{self.username}] Prediction: {result.get('prediction', 'N/A')}")
-            print(f"[{self.username}] Parsed: {action}")
+            # print(f"[{self.username}] Parsed: {action}") # AgentPlayer does parsing 
             print(f"[{self.username}] === End Turn ===\n")
-
-        if action:
-            print(f"[{self.username}] Turn {battle.turn}: {action}")
-            return self.create_order(action)
-        else:
-            print(f"[{self.username}] Could not parse response: {result['action'][:200]}...")
-            return self._choose_random_move_only(battle)
-
-    def _choose_random_move_only(self, battle: AbstractBattle) -> str:
-        """Choose a random move (not switch) as fallback. Only switches if no moves available."""
-        if battle.available_moves:
-            move = random.choice(battle.available_moves)
-            return self.create_order(move)
-        elif battle.available_switches:
-            pokemon = random.choice(battle.available_switches)
-            return self.create_order(pokemon)
-        else:
-            return self.choose_default_move()
-
-    def _update_previous_outcome(self, battle_id: str, prev_events: str):
-        """Update the previous turn's decision with what actually happened."""
-        if not self.decision_history[battle_id]:
-            return
-
-        last_decision = self.decision_history[battle_id][-1]
-        if last_decision["outcome"] is None:
-            # Summarize what happened (truncated for context management)
-            last_decision["outcome"] = prev_events[:100] if prev_events else "no events"
-
-    def _format_decision_history(self, battle_id: str) -> str:
-        """Format decision history with reasoning and outcomes."""
-        lines = []
-        for d in self.decision_history[battle_id][-8:]:  # Last 8 turns
-            line = f"T{d['turn']}: {d['action']}"
-            if d.get('reasoning'):
-                line += f" | {d['reasoning']}"
-            if d.get('prediction') and d.get('outcome'):
-                # Show if prediction was correct
-                line += f" → {d['outcome'][:50]}"
-            lines.append(line)
-        return "\n".join(lines)
-
-    def _format_battle_plan(self, plan: dict) -> str:
-        """Format battle plan for display."""
-        lines = []
-        for goal in plan.get("goals", []):
-            if goal["status"] == "completed":
-                status = "✓"
-            elif goal["status"] == "abandoned":
-                status = "✗"
-            else:
-                status = "○"
-            lines.append(f"{status} {goal['goal']}")
-            if goal.get("notes"):
-                lines.append(f"   └─ {goal['notes']}")
-        return "\n".join(lines) if lines else ""
+            
+        return result
 
     async def _run_reasoning_subagent(
         self,
-        battle: AbstractBattle,
+        battle: "AbstractBattle",
         prev_turn_events: str,
         current_state: str,
         decision_history: str,
@@ -390,7 +234,6 @@ Your final response must include:
                     tool_calls_made += len(message.tool_calls)
 
                     # Add assistant message with tool calls
-                    # For DeepSeek Reasoner and similar models, include reasoning_content if present
                     assistant_msg = {
                         "role": "assistant",
                         "content": message.content,
@@ -417,7 +260,7 @@ Your final response must include:
                     for tool_call in message.tool_calls:
                         tool_start = time.time()
 
-                        # Track plan updates
+                        # Track plan updates (informational only here, as tool exec modifies plan)
                         if tool_call.function.name == "update_battle_plan":
                             try:
                                 args = json.loads(tool_call.function.arguments)
@@ -544,60 +387,6 @@ Your final response must include:
             result["action"] = content.strip()
 
         return result
-
-    def _apply_plan_updates(self, battle_id: str, updates: list):
-        """Apply plan updates from subagent."""
-        plan = self.battle_plans[battle_id]
-
-        for update in updates:
-            action = update.get("action")
-
-            if action == "add_goal":
-                plan["goals"].append({
-                    "id": len(plan["goals"]) + 1,
-                    "goal": update.get("text", ""),
-                    "status": "active",
-                    "notes": ""
-                })
-
-            elif action == "complete_goal":
-                goal_id = update.get("goal_id")
-                for goal in plan["goals"]:
-                    if goal["id"] == goal_id:
-                        goal["status"] = "completed"
-
-            elif action == "abandon_goal":
-                goal_id = update.get("goal_id")
-                for goal in plan["goals"]:
-                    if goal["id"] == goal_id:
-                        goal["status"] = "abandoned"
-
-            elif action == "add_note":
-                goal_id = update.get("goal_id")
-                for goal in plan["goals"]:
-                    if goal["id"] == goal_id:
-                        goal["notes"] = update.get("text", "")
-
-    def battle_finished_callback(self, battle: AbstractBattle) -> None:
-        """Called when a battle ends. Finalize logging and clean up per-battle state."""
-        battle_id = battle.battle_tag
-
-        # Log battle completion
-        if self.battle_logger:
-            won = battle.won if battle.won is not None else False
-            self.battle_logger.end_battle(
-                battle_id=battle_id,
-                player_name=self.username,
-                won=won,
-                total_turns=battle.turn,
-                forfeit=battle.forfeit
-            )
-
-        # Clean up per-battle state
-        if battle_id in self.decision_history:
-            del self.decision_history[battle_id]
-        if battle_id in self.battle_plans:
-            del self.battle_plans[battle_id]
 
 
 # Backwards compatibility alias
