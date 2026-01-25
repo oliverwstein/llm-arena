@@ -5,17 +5,19 @@ import asyncio
 import argparse
 import yaml
 import sys
+import uuid
 from pathlib import Path
 from dataclasses import dataclass
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from poke_env.player import SimpleHeuristicsPlayer
-from poke_env import ServerConfiguration
+from poke_env import ServerConfiguration, AccountConfiguration
 
 from src.llm_player import LLMPlayer
 from src.team_pool import get_team_pool
 from src.env_manager import load_env_file, has_api_key
+from src.battle_logger import BattleLogger
 
 # Load environment
 load_env_file()
@@ -58,6 +60,7 @@ async def benchmark_model(
     n_battles: int = 10,
     verbose: bool = False,
     timeout: int = 30,
+    battle_logger: BattleLogger = None,
 ) -> dict:
     """Run a single model against the heuristic baseline."""
 
@@ -78,8 +81,14 @@ async def benchmark_model(
             "reason": "no_api_key",
         }
 
+    # Create unique usernames for this session
+    session_id = str(uuid.uuid4())[:8]
+    llm_username = f"LLM-{model_config.name}-{session_id}"[:18]  # Limit length for Showdown
+    heuristic_username = f"Heuristic-{session_id}"
+
     # Create players
     llm_player = LLMPlayer(
+        account_configuration=AccountConfiguration(llm_username, None),
         model=model_config.model,
         temperature=model_config.temperature,
         max_tokens=model_config.max_tokens,
@@ -88,9 +97,11 @@ async def benchmark_model(
         team=team_pool,
         server_configuration=SERVER_CONFIG,
         verbose=verbose,
+        battle_logger=battle_logger,
     )
 
     heuristic_player = SimpleHeuristicsPlayer(
+        account_configuration=AccountConfiguration(heuristic_username, None),
         battle_format=BATTLE_FORMAT,
         team=team_pool,
         server_configuration=SERVER_CONFIG,
@@ -157,6 +168,7 @@ Examples:
     parser.add_argument("--verbose", "-v", action="store_true", help="Show full LLM responses")
     parser.add_argument("--max-tokens", type=int, help="Override max tokens (default: 150, use 1000+ for reasoning models)")
     parser.add_argument("--timeout", type=int, default=30, help="LLM timeout in seconds (default: 30, use 120+ for reasoning models)")
+    parser.add_argument("--no-log", action="store_true", help="Disable battle logging")
 
     args = parser.parse_args()
 
@@ -198,11 +210,16 @@ Examples:
 
     print(f"\nModels to benchmark: {[m.name for m in models_to_run]}")
 
+    # Create battle logger
+    logger = None if args.no_log else BattleLogger(log_dir="logs", enabled=True)
+    if logger:
+        print(f"Logging battles to: logs/battles.jsonl")
+
     # Run benchmarks
     results = []
     for model_config in models_to_run:
         print(f"DEBUG: verbose={args.verbose}, timeout={args.timeout}")
-        result = await benchmark_model(model_config, team_pool, args.battles, verbose=args.verbose, timeout=args.timeout)
+        result = await benchmark_model(model_config, team_pool, args.battles, verbose=args.verbose, timeout=args.timeout, battle_logger=logger)
         results.append(result)
 
     # Summary

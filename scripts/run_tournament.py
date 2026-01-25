@@ -15,6 +15,7 @@ load_env_file()
 
 from src.tournament import run_tournament, TournamentConfig, ModelConfig
 from src.results import ResultsDB
+from src.battle_logger import BattleLogger
 
 
 # Default models to test
@@ -82,6 +83,7 @@ Environment:
     parser.add_argument("--env-file", help="Path to .env file with API keys")
     parser.add_argument("--fallback", choices=["random", "heuristic"], default="random",
                         help="Bot type to use when API key is missing (default: random)")
+    parser.add_argument("--no-log", action="store_true", help="Disable battle logging")
 
     args = parser.parse_args()
     
@@ -111,8 +113,13 @@ Environment:
         fallback_type=args.fallback,
     )
 
+    # Create battle logger
+    logger = None if args.no_log else BattleLogger(log_dir="logs", enabled=True)
+    if logger:
+        print(f"Logging battles to: logs/battles.jsonl")
+
     # Run tournament
-    results = await run_tournament(config, models, db)
+    results = await run_tournament(config, models, db, battle_logger=logger)
 
     print("\nTournament complete!")
 

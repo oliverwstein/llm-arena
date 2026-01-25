@@ -2,13 +2,16 @@
 
 import random
 import string
-from typing import Optional, Union
+from typing import Optional, Union, TYPE_CHECKING
 from poke_env.player import Player, RandomPlayer, SimpleHeuristicsPlayer
 from poke_env import AccountConfiguration, ServerConfiguration
 
 from .llm_player import LLMPlayer, CUSTOM_SERVER_CONFIG
 from .env_manager import has_api_key, get_api_key_for_model
 from .team_pool import TeamPool
+
+if TYPE_CHECKING:
+    from .battle_logger import BattleLogger
 
 
 def generate_unique_name(base_name: str) -> str:
@@ -23,11 +26,11 @@ def generate_unique_name(base_name: str) -> str:
 class PlayerFactory:
     """
     Factory for creating battle players with automatic fallback.
-    
+
     When an LLM model's API key is not available, automatically falls back
     to a random-move bot or heuristic bot instead.
     """
-    
+
     def __init__(
         self,
         team_pool: Optional[TeamPool] = None,
@@ -35,22 +38,25 @@ class PlayerFactory:
         battle_format: str = "gen4ou",
         fallback_type: str = "random",  # "random" or "heuristic"
         add_random_suffix: bool = True,  # Add random suffix to avoid name collisions
+        battle_logger: Optional["BattleLogger"] = None,
     ):
         """
         Initialize the player factory.
-        
+
         Args:
             team_pool: Team pool to use for all players
             server_config: Server configuration (defaults to CUSTOM_SERVER_CONFIG)
             battle_format: Battle format string
             fallback_type: Type of fallback bot ("random" or "heuristic")
             add_random_suffix: Add random suffix to names to avoid collisions
+            battle_logger: Optional BattleLogger for comprehensive output logging
         """
         self.team_pool = team_pool
         self.server_config = server_config or CUSTOM_SERVER_CONFIG
         self.battle_format = battle_format
         self.fallback_type = fallback_type
         self.add_random_suffix = add_random_suffix
+        self.battle_logger = battle_logger
     
     def create_player(
         self,
@@ -89,6 +95,7 @@ class PlayerFactory:
                 battle_format=self.battle_format,
                 team=self.team_pool,
                 server_configuration=self.server_config,
+                battle_logger=self.battle_logger,
             )
             return player, True
         else:
@@ -138,23 +145,26 @@ def create_player_with_fallback(
     model: str,
     team_pool: Optional[TeamPool] = None,
     battle_format: str = "gen4ou",
+    battle_logger: Optional["BattleLogger"] = None,
     **kwargs
 ) -> tuple[Player, bool]:
     """
     Create a player with automatic fallback to random bot.
-    
+
     Args:
         name: Display name
         model: LiteLLM model identifier
         team_pool: Optional team pool
         battle_format: Battle format
+        battle_logger: Optional BattleLogger for comprehensive output logging
         **kwargs: Additional arguments for LLMPlayer
-        
+
     Returns:
         Tuple of (Player, is_llm: bool)
     """
     factory = PlayerFactory(
         team_pool=team_pool,
         battle_format=battle_format,
+        battle_logger=battle_logger,
     )
     return factory.create_player(name, model, **kwargs)

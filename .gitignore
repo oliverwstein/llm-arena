@@ -48,3 +48,4 @@ technical-machine/
 
 # Logs
 *.log
+logs/

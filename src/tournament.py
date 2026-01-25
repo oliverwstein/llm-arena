@@ -2,7 +2,7 @@
 
 import asyncio
 from datetime import datetime
-from typing import Optional, Union
+from typing import Optional, Union, TYPE_CHECKING
 from dataclasses import dataclass, field
 from poke_env.player import cross_evaluate, Player
 
@@ -11,6 +11,9 @@ from .team_pool import get_team_pool
 from .results import ResultsDB
 from .player_factory import PlayerFactory
 from .env_manager import print_api_key_status
+
+if TYPE_CHECKING:
+    from .battle_logger import BattleLogger
 
 
 @dataclass
@@ -50,21 +53,23 @@ def create_players(
     save_replays: bool = False,
     replay_dir: str = "replays",
     fallback_type: str = "random",
+    battle_logger: Optional["BattleLogger"] = None,
 ) -> list[PlayerInfo]:
     """
     Create players for each model, with automatic fallback for missing API keys.
-    
+
     Returns list of PlayerInfo objects containing player and metadata.
     """
     # Load the team pool (shared by all players)
     team_pool = get_team_pool(teams_dir)
-    
+
     # Create player factory
     factory = PlayerFactory(
         team_pool=team_pool,
         server_config=CUSTOM_SERVER_CONFIG,
         battle_format=battle_format,
         fallback_type=fallback_type,
+        battle_logger=battle_logger,
     )
     
     player_infos = []
@@ -86,6 +91,7 @@ async def run_tournament(
     models: list[ModelConfig],
     results_db: Optional[ResultsDB] = None,
     show_api_status: bool = True,
+    battle_logger: Optional["BattleLogger"] = None,
 ) -> dict:
     """
     Run a round-robin tournament between all models.
@@ -95,6 +101,7 @@ async def run_tournament(
         models: List of model configurations
         results_db: Optional database for persisting results
         show_api_status: If True, print API key status at start
+        battle_logger: Optional BattleLogger for comprehensive output logging
 
     Returns:
         Dictionary with win rates for each matchup
@@ -105,7 +112,7 @@ async def run_tournament(
     print(f"Battles per matchup: {config.n_battles}")
     print(f"Models: {[m.name for m in models]}")
     print(f"{'='*60}\n")
-    
+
     if show_api_status:
         print_api_key_status()
 
@@ -117,6 +124,7 @@ async def run_tournament(
         save_replays=config.save_replays,
         replay_dir=config.replay_dir,
         fallback_type=config.fallback_type,
+        battle_logger=battle_logger,
     )
     
     # Report player types
