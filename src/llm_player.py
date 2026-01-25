@@ -80,11 +80,11 @@ class LLMPlayer(AgentPlayer):
         self,
         model: str,
         temperature: float = 0.7,
-        max_tokens: int = 500,
+        max_tokens: int = 4096,
         timeout: float = 30.0,
         system_prompt: str = SYSTEM_PROMPT,
         verbose: bool = False,
-        max_tool_calls: int = 8,
+        max_tool_calls: int = 20,
         battle_logger: Optional["BattleLogger"] = None,
         **kwargs
     ):
@@ -101,13 +101,6 @@ class LLMPlayer(AgentPlayer):
 
         # Multi-provider compatibility: Disable tools for reasoning models that don't support them well
         self.use_tools = True
-        if "reasoner" in self.model.lower() and "deepseek" in self.model.lower():
-            self.use_tools = False
-            if self.system_prompt == SYSTEM_PROMPT:
-                self.system_prompt = NO_TOOLS_SYSTEM_PROMPT
-            if self.verbose:
-                print(f"[{self.username}] Tools disabled for reasoning model: {model}")
-
     async def _make_decision(self, context: dict) -> dict:
         """
         Run reasoning subagent with tools.
@@ -489,7 +482,7 @@ Your final response must include:
         try:
             response = await self._execute_generation(
                 messages=messages,
-                max_tokens=200
+                max_tokens=self.max_tokens
             )
 
             # Track token usage for final response
@@ -545,26 +538,34 @@ Your final response must include:
 
     def _parse_subagent_response(self, content: str, plan_updates: list) -> dict:
         """Parse structured response from subagent."""
+        import re
         result = {"action": "", "reasoning": "", "prediction": "", "plan_updates": plan_updates}
 
+        # Remove thinking blocks for parsing
+        clean_content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL).strip()
+        
+        # Use content if cleaning made it empty (fallback)
+        if not clean_content:
+            clean_content = content
+
         # Parse ACTION: line
-        if "ACTION:" in content:
-            action_line = content.split("ACTION:")[-1].split("\n")[0].strip()
+        if "ACTION:" in clean_content:
+            action_line = clean_content.split("ACTION:")[-1].split("\n")[0].strip()
             result["action"] = action_line
 
         # Parse REASONING: line
-        if "REASONING:" in content:
-            reasoning_line = content.split("REASONING:")[-1].split("\n")[0].strip()
+        if "REASONING:" in clean_content:
+            reasoning_line = clean_content.split("REASONING:")[-1].split("\n")[0].strip()
             result["reasoning"] = reasoning_line
 
         # Parse PREDICTION: line
-        if "PREDICTION:" in content:
-            prediction_line = content.split("PREDICTION:")[-1].split("\n")[0].strip()
+        if "PREDICTION:" in clean_content:
+            prediction_line = clean_content.split("PREDICTION:")[-1].split("\n")[0].strip()
             result["prediction"] = prediction_line
 
         # Fallback: try to find move/switch anywhere
         if not result["action"]:
-            result["action"] = content.strip()
+            result["action"] = clean_content.strip()
 
         return result
 
