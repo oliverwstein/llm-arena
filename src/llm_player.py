@@ -1,6 +1,7 @@
 """LLM-powered Pokemon battle player with tool-calling capabilities."""
 
 import json
+import random
 import time
 from typing import Optional, TYPE_CHECKING
 from poke_env.player import Player
@@ -11,8 +12,7 @@ import litellm
 from .state_formatter import format_battle_state
 from .response_parser import parse_llm_response
 from .event_formatter import get_recent_events
-from .tools.definitions import TOOL_DEFINITIONS
-from .tools.executor import execute_tool
+from .tools.registry import get_llm_tool_definitions, execute_tool, get_help_text
 
 if TYPE_CHECKING:
     from .battle_logger import BattleLogger
@@ -25,24 +25,19 @@ CUSTOM_SERVER_CONFIG = ServerConfiguration(
 )
 
 
-# System prompt for tool-calling LLM
+# System prompt for tool-calling LLM - uses get_help_text() for tool list
 
-SYSTEM_PROMPT = """You are playing a competitive Pokemon battle (Gen 4 OU format). Your goal is to win.
+def _build_system_prompt() -> str:
+    """Build the system prompt with current tool help."""
+    return f"""You are playing a competitive Pokemon battle (Gen 4 OU format). Your goal is to win.
 
-You have access to information tools:
-- Type effectiveness and matchup analysis
-- Damage calculations
-- Move/Pokemon details lookup
-- Complete battle log (objective record from the game)
-- Speed comparison
-- Field condition analysis
-- Strategic planning (set and track goals)
-
+{get_help_text()}
 IMPORTANT:
 - Tools provide DATA. YOU reason about strategy and prediction.
 - The battle log is the objective record - use it to review what actually happened.
 - Consider what the opponent might do - that's YOUR job, not the tools'.
 - You may call multiple tools to gather information before deciding.
+- Use the 'help' tool if you need details on any tool.
 
 Your final response MUST include:
 - ACTION: move <move_name> or switch <pokemon_name>
@@ -52,6 +47,9 @@ Your final response MUST include:
 Available actions:
 - move <name>: Use one of your available moves
 - switch <name>: Switch to a Pokemon from your bench"""
+
+
+SYSTEM_PROMPT = _build_system_prompt()
 
 
 NO_TOOLS_SYSTEM_PROMPT = """You are playing a competitive Pokemon battle (Gen 4 OU format). Your goal is to win.
@@ -242,7 +240,18 @@ class LLMPlayer(Player):
             return self.create_order(action)
         else:
             print(f"[{self.username}] Could not parse response: {result['action'][:200]}...")
-            return self.choose_random_move(battle)
+            return self._choose_random_move_only(battle)
+
+    def _choose_random_move_only(self, battle: AbstractBattle) -> str:
+        """Choose a random move (not switch) as fallback. Only switches if no moves available."""
+        if battle.available_moves:
+            move = random.choice(battle.available_moves)
+            return self.create_order(move)
+        elif battle.available_switches:
+            pokemon = random.choice(battle.available_switches)
+            return self.create_order(pokemon)
+        else:
+            return self.choose_default_move()
 
     def _update_previous_outcome(self, battle_id: str, prev_events: str):
         """Update the previous turn's decision with what actually happened."""
@@ -350,7 +359,7 @@ Your final response must include:
         raw_response_parts = []
 
         # If tools are disabled, we run once without tools using default tools=None
-        current_tools = TOOL_DEFINITIONS if self.use_tools else None
+        current_tools = get_llm_tool_definitions() if self.use_tools else None
         current_tool_choice = "auto" if self.use_tools else None
 
         while tool_calls_made < self.max_tool_calls:
