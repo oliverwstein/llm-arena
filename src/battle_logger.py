@@ -185,6 +185,59 @@ class BattleLogger:
 
         self._save_active(entry)
 
+    def log_fallback(
+        self,
+        battle_id: str,
+        player_name: str,
+        turn: int,
+        reason: str,
+        random_action: str
+    ) -> None:
+        """
+        Log when LLM fails and a random move is chosen.
+
+        Args:
+            battle_id: Battle identifier
+            player_name: Player name
+            turn: Turn number
+            reason: Why fallback occurred (timeout, api_error, token_limit, etc.)
+            random_action: Description of the random action chosen
+        """
+        if not self.enabled:
+            return
+
+        key = (battle_id, player_name)
+        entry = self._active_battles.get(key)
+
+        if not entry:
+            return
+
+        # Add fallback info to the last turn if it exists, or create a minimal entry
+        fallback_data = {
+            "fallback": True,
+            "reason": reason,
+            "random_action": random_action
+        }
+
+        if entry.turns:
+            # Update the last turn with fallback info
+            entry.turns[-1]["fallback"] = fallback_data
+        else:
+            # No turns yet - create a fallback-only entry
+            entry.turns.append({
+                "turn": turn,
+                "observation": "",
+                "state": "",
+                "raw_response": "",
+                "tool_calls": [],
+                "parsed": {"action": random_action, "reasoning": f"FALLBACK: {reason}"},
+                "tokens": {},
+                "latency_ms": 0,
+                "fallback": fallback_data
+            })
+
+        self._save_active(entry)
+
     def end_battle(
         self,
         battle_id: str,

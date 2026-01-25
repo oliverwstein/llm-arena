@@ -135,6 +135,128 @@ class LLMPlayer(AgentPlayer):
             
         return result
 
+    async def _execute_generation(self, messages, tools=None, tool_choice=None, max_tokens=None):
+        """
+        Execute generation with streaming to capture partial output on timeout.
+        Returns a mock response object compatible with the non-streaming response.
+        """
+        response_content = ""
+        response_reasoning = ""
+        response_tool_calls_dict = {} # index -> {id, type, name, args}
+        input_tokens = 0
+        output_tokens = 0
+        reasoning_tokens = 0
+        
+        try:
+            # Use stream_options to try getting usage if supported
+            stream = await litellm.acompletion(
+                model=self.model,
+                messages=messages,
+                tools=tools,
+                tool_choice=tool_choice,
+                temperature=self.temperature,
+                max_tokens=max_tokens or self.max_tokens,
+                timeout=self.timeout,
+                stream=True,
+                stream_options={"include_usage": True}
+            )
+            
+            async for chunk in stream:
+                # Handle usage if present (often in last chunk)
+                if hasattr(chunk, 'usage') and chunk.usage:
+                    input_tokens = getattr(chunk.usage, 'prompt_tokens', 0)
+                    output_tokens = getattr(chunk.usage, 'completion_tokens', 0)
+                    
+                    # Track reasoning tokens if available
+                    details = getattr(chunk.usage, 'completion_tokens_details', None)
+                    if details:
+                        r_tokens = getattr(details, 'reasoning_tokens', 0)
+                        if r_tokens:
+                            reasoning_tokens = r_tokens
+                    elif hasattr(chunk.usage, 'reasoning_tokens'):
+                        reasoning_tokens = getattr(chunk.usage, 'reasoning_tokens', 0)
+                
+                if not chunk.choices:
+                    continue
+                    
+                delta = chunk.choices[0].delta
+                
+                # Content
+                if delta.content:
+                    response_content += delta.content
+                    
+                # Reasoning (DeepSeek)
+                if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                    response_reasoning += delta.reasoning_content
+                    
+                # Tool calls
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        if idx not in response_tool_calls_dict:
+                            response_tool_calls_dict[idx] = {
+                                "id": "", "type": "function", "function": {"name": "", "arguments": ""}
+                            }
+                        
+                        entry = response_tool_calls_dict[idx]
+                        if tc.id: entry["id"] += tc.id
+                        if tc.type: entry["type"] = tc.type
+                        if tc.function:
+                            if tc.function.name: entry["function"]["name"] += tc.function.name
+                            if tc.function.arguments: entry["function"]["arguments"] += tc.function.arguments
+
+            # Reconstruct objects to mimic non-streaming response
+            class MockFunction:
+                def __init__(self, name, args):
+                    self.name = name
+                    self.arguments = args
+            
+            class MockToolCall:
+                def __init__(self, id, type, name, args):
+                    self.id = id
+                    self.type = type
+                    self.function = MockFunction(name, args)
+            
+            final_tool_calls = []
+            for idx in sorted(response_tool_calls_dict.keys()):
+                entry = response_tool_calls_dict[idx]
+                # If ID is missing (common in streaming), generate one or leave empty
+                tid = entry["id"] or f"call_{idx}"
+                final_tool_calls.append(MockToolCall(tid, entry["type"], entry["function"]["name"], entry["function"]["arguments"]))
+                
+            class MockMessage:
+                def __init__(self, content, reasoning, tool_calls):
+                    self.content = content
+                    self.reasoning_content = reasoning
+                    self.tool_calls = tool_calls
+            
+            class MockChoice:
+                def __init__(self, msg):
+                    self.message = msg
+                    
+            class MockUsage:
+                def __init__(self, inp, out, reasoning=0):
+                    self.prompt_tokens = inp
+                    self.completion_tokens = out
+                    self.reasoning_tokens = reasoning
+                    self.completion_tokens_details = type('obj', (object,), {'reasoning_tokens': reasoning})
+                    
+            class MockResponse:
+                def __init__(self, choice, usage):
+                    self.choices = [choice]
+                    self.usage = usage
+            
+            return MockResponse(
+                MockChoice(MockMessage(response_content, response_reasoning, final_tool_calls)), 
+                MockUsage(input_tokens, output_tokens, reasoning_tokens)
+            )
+
+        except Exception as e:
+            # Attach partial content to exception for recovery
+            e.partial_content = response_content
+            e.partial_reasoning = response_reasoning
+            raise e
+
     async def _run_reasoning_subagent(
         self,
         battle: "AbstractBattle",
@@ -200,6 +322,7 @@ Your final response must include:
         logged_tool_calls = []
         total_input_tokens = 0
         total_output_tokens = 0
+        total_reasoning_tokens = 0
         raw_response_parts = []
 
         # If tools are disabled, we run once without tools using default tools=None
@@ -208,14 +331,10 @@ Your final response must include:
 
         while tool_calls_made < self.max_tool_calls:
             try:
-                response = await litellm.acompletion(
-                    model=self.model,
+                response = await self._execute_generation(
                     messages=messages,
                     tools=current_tools,
-                    tool_choice=current_tool_choice,
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
-                    timeout=self.timeout,
+                    tool_choice=current_tool_choice
                 )
 
                 message = response.choices[0].message
@@ -224,10 +343,26 @@ Your final response must include:
                 if hasattr(response, 'usage') and response.usage:
                     total_input_tokens += getattr(response.usage, 'prompt_tokens', 0)
                     total_output_tokens += getattr(response.usage, 'completion_tokens', 0)
+                    
+                    # Track reasoning tokens if available
+                    details = getattr(response.usage, 'completion_tokens_details', None)
+                    if details:
+                        reasoning = getattr(details, 'reasoning_tokens', 0)
+                        if reasoning:
+                            total_reasoning_tokens += reasoning
+                    elif hasattr(response.usage, 'reasoning_tokens'):
+                        total_reasoning_tokens += getattr(response.usage, 'reasoning_tokens', 0)
 
-                # Capture response content for logging
+                # Capture response content (and thinking) for logging
+                full_content = ""
+                if hasattr(message, 'reasoning_content') and message.reasoning_content:
+                    full_content += f"<thinking>{message.reasoning_content}</thinking>\n"
+                
                 if message.content:
-                    raw_response_parts.append(message.content)
+                    full_content += message.content
+
+                if full_content:
+                    raw_response_parts.append(full_content)
 
                 # Check for tool calls
                 if message.tool_calls:
@@ -250,7 +385,7 @@ Your final response must include:
                         ]
                     }
 
-                    # Include reasoning_content if available (required for DeepSeek Reasoner)
+                    # Include reasoning_content if available
                     if hasattr(message, 'reasoning_content') and message.reasoning_content:
                         assistant_msg["reasoning_content"] = message.reasoning_content
 
@@ -260,7 +395,7 @@ Your final response must include:
                     for tool_call in message.tool_calls:
                         tool_start = time.time()
 
-                        # Track plan updates (informational only here, as tool exec modifies plan)
+                        # Track plan updates
                         if tool_call.function.name == "update_battle_plan":
                             try:
                                 args = json.loads(tool_call.function.arguments)
@@ -302,22 +437,46 @@ Your final response must include:
                 # No tool calls - this is the final answer
                 latency_ms = int((time.time() - start_time) * 1000)
                 parsed = self._parse_subagent_response(message.content or "", plan_updates)
-                parsed["raw_response"] = "\n---\n".join(raw_response_parts) if raw_response_parts else (message.content or "")
+                
+                # If we have reasoning content, treat it as reasoning if parsed reasoning is empty
+                if not parsed["reasoning"] and hasattr(message, 'reasoning_content') and message.reasoning_content:
+                    parsed["reasoning"] = message.reasoning_content
+                
+                parsed["raw_response"] = "\n---\n".join(raw_response_parts)
                 parsed["tool_calls"] = logged_tool_calls
-                parsed["tokens"] = {"input": total_input_tokens, "output": total_output_tokens}
+                parsed["tokens"] = {
+                    "input": total_input_tokens, 
+                    "output": total_output_tokens,
+                    "reasoning": total_reasoning_tokens
+                }
                 parsed["latency_ms"] = latency_ms
                 return parsed
 
             except Exception as e:
                 print(f"[{self.username}] Subagent error: {e}")
                 latency_ms = int((time.time() - start_time) * 1000)
+                
+                # Recover partial content from exception if available
+                partial_content = getattr(e, "partial_content", "")
+                partial_reasoning = getattr(e, "partial_reasoning", "")
+                
+                if partial_reasoning:
+                    raw_response_parts.append(f"<thinking>{partial_reasoning}</thinking>\n{partial_content}")
+                elif partial_content:
+                    raw_response_parts.append(partial_content)
+                
+                current_raw = "\n---\n".join(raw_response_parts)
                 return {
                     "action": "",
                     "reasoning": str(e),
                     "plan_updates": plan_updates,
-                    "raw_response": f"ERROR: {e}",
+                    "raw_response": f"{current_raw}\n---\nERROR: {e}" if current_raw else f"ERROR: {e}",
                     "tool_calls": logged_tool_calls,
-                    "tokens": {"input": total_input_tokens, "output": total_output_tokens},
+                    "tokens": {
+                        "input": total_input_tokens, 
+                        "output": total_output_tokens,
+                        "reasoning": total_reasoning_tokens
+                    },
                     "latency_ms": latency_ms
                 }
 
@@ -328,38 +487,59 @@ Your final response must include:
         })
 
         try:
-            response = await litellm.acompletion(
-                model=self.model,
+            response = await self._execute_generation(
                 messages=messages,
-                temperature=self.temperature,
-                max_tokens=200,
-                timeout=self.timeout,
+                max_tokens=200
             )
+
             # Track token usage for final response
             if hasattr(response, 'usage') and response.usage:
                 total_input_tokens += getattr(response.usage, 'prompt_tokens', 0)
                 total_output_tokens += getattr(response.usage, 'completion_tokens', 0)
 
-            final_content = response.choices[0].message.content or ""
-            raw_response_parts.append(final_content)
+            final_msg = response.choices[0].message
+            final_content = ""
+            if hasattr(final_msg, 'reasoning_content') and final_msg.reasoning_content:
+                final_content += f"<thinking>{final_msg.reasoning_content}</thinking>\n"
+            
+            if final_msg.content:
+                final_content += final_msg.content
+                
+            if final_content:
+                raw_response_parts.append(final_content)
 
             latency_ms = int((time.time() - start_time) * 1000)
             parsed = self._parse_subagent_response(final_content, plan_updates)
             parsed["raw_response"] = "\n---\n".join(raw_response_parts)
             parsed["tool_calls"] = logged_tool_calls
-            parsed["tokens"] = {"input": total_input_tokens, "output": total_output_tokens}
+            parsed["tokens"] = {
+                "input": total_input_tokens, 
+                "output": total_output_tokens,
+                "reasoning": total_reasoning_tokens
+            }
             parsed["latency_ms"] = latency_ms
             return parsed
         except Exception as e:
             print(f"[{self.username}] Final response error: {e}")
             latency_ms = int((time.time() - start_time) * 1000)
+            
+            # Recover partial content
+            partial_content = getattr(e, "partial_content", "")
+            partial_reasoning = getattr(e, "partial_reasoning", "")
+            if partial_reasoning or partial_content:
+                 raw_response_parts.append(f"<thinking>{partial_reasoning}</thinking>\n{partial_content}")
+            
             return {
                 "action": "",
                 "reasoning": "",
                 "plan_updates": plan_updates,
                 "raw_response": "\n---\n".join(raw_response_parts) + f"\n---\nERROR: {e}",
                 "tool_calls": logged_tool_calls,
-                "tokens": {"input": total_input_tokens, "output": total_output_tokens},
+                "tokens": {
+                    "input": total_input_tokens, 
+                    "output": total_output_tokens,
+                    "reasoning": total_reasoning_tokens
+                },
                 "latency_ms": latency_ms
             }
 

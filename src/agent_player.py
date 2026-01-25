@@ -101,7 +101,30 @@ class AgentPlayer(Player):
         # 7. Convert action to order
         # Subclasses or specific parsing logic might be needed if action_string isn't direct
         if not action_string:
-            return self._choose_random_move_only(battle)
+            # Fallback to random move - log the reason
+            fallback_reason = decision_result.get("fallback_reason", "unknown_error")
+            if "ERROR" in decision_result.get("raw_response", ""):
+                if "timeout" in decision_result.get("raw_response", "").lower():
+                    fallback_reason = "timeout"
+                else:
+                    fallback_reason = "api_error"
+            
+            random_order, random_action_desc = self._choose_random_move_with_description(battle)
+            
+            # Log the fallback
+            if self.battle_logger:
+                self.battle_logger.log_fallback(
+                    battle_id=battle_id,
+                    player_name=self.username,
+                    turn=battle.turn,
+                    reason=fallback_reason,
+                    random_action=random_action_desc
+                )
+            
+            if self.verbose:
+                print(f"[{self.username}] FALLBACK ({fallback_reason}): {random_action_desc}")
+            
+            return random_order
             
         return self.create_order(self._parse_action(action_string, battle))
 
@@ -189,15 +212,20 @@ class AgentPlayer(Player):
         return "\n".join(lines) if lines else ""
 
     def _choose_random_move_only(self, battle: AbstractBattle) -> str:
-        """Fallback random move."""
+        """Fallback random move (without description)."""
+        order, _ = self._choose_random_move_with_description(battle)
+        return order
+    
+    def _choose_random_move_with_description(self, battle: AbstractBattle) -> tuple[str, str]:
+        """Fallback random move with description of what was chosen."""
         if battle.available_moves:
             move = random.choice(battle.available_moves)
-            return self.create_order(move)
+            return self.create_order(move), f"move {move.id}"
         elif battle.available_switches:
             pokemon = random.choice(battle.available_switches)
-            return self.create_order(pokemon)
+            return self.create_order(pokemon), f"switch {pokemon.species}"
         else:
-            return self.choose_default_move()
+            return self.choose_default_move(), "default"
 
     def battle_finished_callback(self, battle: AbstractBattle) -> None:
         """Clean up."""
