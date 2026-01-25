@@ -18,46 +18,56 @@ models:
   - name: "Claude-Opus-4.5"
     model: "claude-opus-4-5-20251101"
     temperature: 0.7
+    team: "Raw-Teams/Mixed-Jirachi-Gengar-Offense.md"
 
   - name: "Claude-Sonnet-4.5"
     model: "claude-sonnet-4-5-20251101"
     temperature: 0.7
+    team: "Raw-Teams/Dragonite-Lead-Boom-Offense.md"
 
   - name: "Claude-Haiku-4.5"
     model: "claude-haiku-4-5-20251101"
     temperature: 0.7
+    team: "Raw-Teams/Forretress-Zapdos-Balance.md"
 
   # Google
   - name: "Gemini-3.0-Pro"
     model: "gemini/gemini-3.0-pro"
     temperature: 0.7
+    team: "Raw-Teams/Gliscor-Lucario-Spikes-Stack.md"
 
   - name: "Gemini-3.0-Flash"
     model: "gemini/gemini-3.0-flash"
     temperature: 0.7
+    team: "Raw-Teams/Dragonite-Lead-Boom-Offense.md"
 
   # OpenAI
   - name: "GPT-5.1"
     model: "gpt-5.1"
     temperature: 0.7
+    team: "Raw-Teams/Mixed-Flygon-Spikes-Stack.md"
 
   - name: "GPT-5-Mini"
     model: "gpt-5-mini"
     temperature: 0.7
+    team: "Raw-Teams/Metagross-Scizor-Offense.md"
 
   - name: "GPT-4.1"
     model: "gpt-4.1"
     temperature: 0.7
+    team: "Raw-Teams/OTR-Bronzong-ChoiceBand-Ttar.md"
 
   # DeepSeek
   - name: "DeepSeek-Reasoner"
     model: "deepseek/deepseek-reasoner"
     temperature: 0.7
+    team: "Raw-Teams/My-Blue-Heaven.md"
 
   # xAI
   - name: "Grok-4"
     model: "xai/grok-4"
     temperature: 0.7
+    team: "Raw-Teams/Zapdos-Hyperoffense.md"
 
 # Example: Force a model to use random bot (for testing/baseline)
 # - name: "Random-Baseline"

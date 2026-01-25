@@ -65,6 +65,7 @@ class PlayerFactory:
         temperature: float = 0.7,
         max_tokens: int = 150,
         force_fallback: bool = False,
+        team_path: Optional[str] = None,
     ) -> tuple[Player, bool]:
         """
         Create a player, using LLM if available or fallback otherwise.
@@ -75,10 +76,26 @@ class PlayerFactory:
             temperature: LLM temperature setting
             max_tokens: Max tokens for LLM response
             force_fallback: If True, always use fallback bot
+            team_path: Optional path to a specific team file (Showdown format)
             
         Returns:
             Tuple of (Player instance, is_llm: bool)
         """
+        # Resolve team
+        team_to_use = self.team_pool
+        if team_path:
+            try:
+                from pathlib import Path
+                p = Path(team_path)
+                if p.exists() and self.team_pool:
+                    content = p.read_text()
+                    # Use team_pool's inherited Teambuilder methods to parse
+                    team_to_use = self.team_pool.join_team(self.team_pool.parse_showdown_team(content))
+                else:
+                    print(f"⚠ Team not found or pool missing: {team_path}")
+            except Exception as e:
+                print(f"⚠ Error loading team {team_path}: {e}")
+
         # Generate unique name if needed
         unique_name = generate_unique_name(name) if self.add_random_suffix else name
         account_config = AccountConfiguration(unique_name, None)
@@ -93,7 +110,7 @@ class PlayerFactory:
                 max_tokens=max_tokens,
                 account_configuration=account_config,
                 battle_format=self.battle_format,
-                team=self.team_pool,
+                team=team_to_use,
                 server_configuration=self.server_config,
                 battle_logger=self.battle_logger,
             )
@@ -108,14 +125,14 @@ class PlayerFactory:
                 player = SimpleHeuristicsPlayer(
                     account_configuration=account_config,
                     battle_format=self.battle_format,
-                    team=self.team_pool,
+                    team=team_to_use,
                     server_configuration=self.server_config,
                 )
             else:  # random
                 player = RandomPlayer(
                     account_configuration=account_config,
                     battle_format=self.battle_format,
-                    team=self.team_pool,
+                    team=team_to_use,
                     server_configuration=self.server_config,
                 )
             return player, False

@@ -36,6 +36,7 @@ class ModelConfig:
     temperature: float = 0.7
     max_tokens: int = 150
     force_fallback: bool = False  # Force use of fallback bot
+    team: Optional[str] = None    # Specific team path (optional)
 
 
 @dataclass
@@ -80,6 +81,7 @@ def create_players(
             temperature=config.temperature,
             max_tokens=config.max_tokens,
             force_fallback=config.force_fallback,
+            team_path=config.team,
         )
         player_infos.append(PlayerInfo(player=player, config=config, is_llm=is_llm))
     
