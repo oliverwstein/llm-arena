@@ -227,7 +227,7 @@ class AgentPlayer(Player):
         else:
             return self.choose_default_move(), "default"
 
-    def battle_finished_callback(self, battle: AbstractBattle) -> None:
+    def _battle_finished_callback(self, battle: AbstractBattle) -> None:
         """Clean up."""
         battle_id = battle.battle_tag
         if self.battle_logger:
