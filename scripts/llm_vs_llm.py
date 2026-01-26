@@ -69,7 +69,9 @@ def find_model(query: str, model_list: list[ModelConfig]) -> Optional[ModelConfi
 def resolve_team(team_path: Optional[str], team_pool):
     """Resolve a team path to a packed team string or return the pool."""
     if not team_path:
-        return team_pool, "Random (Pool)"
+        # Get a specific random team so we can log its name
+        packed, name = team_pool.get_random_team()
+        return packed, name
     
     path = Path(team_path)
     if path.exists():
@@ -84,7 +86,9 @@ def resolve_team(team_path: Optional[str], team_pool):
         print(f"  WARNING: Team file not found: {team_path}")
         print(f"  Falling back to team pool.")
     
-    return team_pool, "Random (Pool)"
+    # Fallback also gets specific random team
+    packed, name = team_pool.get_random_team()
+    return packed, name
 
 
 async def run_battle(
@@ -114,14 +118,18 @@ async def run_battle(
         print(f"  ERROR: No API key available for {model_b.model}")
         return {"status": "error", "reason": f"no_api_key for {model_b.name}"}
 
-    # Create unique usernames
+    # Create unique usernames and player IDs
     session_id = str(uuid.uuid4())[:8]
     username_a = f"L-{session_id}-{model_a.name}"[:18]
     username_b = f"L-{session_id}-{model_b.name}"[:18]
-    
+
     # Ensure unique if same model
     if username_a == username_b:
         username_b = username_b[:-1] + "2"
+
+    # Generate full player IDs (not truncated like usernames)
+    player_id_a = f"{model_a.model}-{uuid.uuid4().hex[:8]}"
+    player_id_b = f"{model_b.model}-{uuid.uuid4().hex[:8]}"
 
     # Resolve teams
     team_a, team_a_name = resolve_team(model_a.team, team_pool)
@@ -143,6 +151,7 @@ async def run_battle(
         verbose=verbose,
         battle_logger=battle_logger,
         team_name=team_a_name,
+        player_id=player_id_a,
     )
 
     player_b = LLMPlayer(
@@ -157,11 +166,12 @@ async def run_battle(
         verbose=verbose,
         battle_logger=battle_logger,
         team_name=team_b_name,
+        player_id=player_id_b,
     )
 
     # Register opponents so they can log the enemy model name correctly
-    player_a.register_opponent(username_b, model_b.model)
-    player_b.register_opponent(username_a, model_a.model)
+    player_a.register_opponent(username_b, model_b.model, player_id=player_id_b)
+    player_b.register_opponent(username_a, model_a.model, player_id=player_id_a)
 
     print(f"\n  Running {n_battles} battles...")
 
@@ -220,6 +230,9 @@ Examples:
     parser.add_argument("--a", required=True, help="Player A: model name or ID")
     parser.add_argument("--b", required=True, help="Player B: model name or ID")
     parser.add_argument("--battles", type=int, default=5, help="Number of battles (default: 5)")
+    parser.add_argument("--team-a", help="Override team file for Player A")
+    parser.add_argument("--team-b", help="Override team file for Player B")
+    parser.add_argument("--random-teams", action="store_true", help="Force random team selection for both players")
     parser.add_argument("--teams-dir", default="Raw-Teams", help="Directory containing team files")
     parser.add_argument("--models", default="config/models.yaml", help="Path to models YAML config")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show full LLM responses")
@@ -263,6 +276,25 @@ Examples:
     if args.max_tokens:
         model_a.max_tokens = args.max_tokens
         model_b.max_tokens = args.max_tokens
+
+    # Apply team overrides
+    # Priority:
+    # 1. Explicit team argument (--team-a/--team-b)
+    # 2. Random teams flag (--random-teams)
+    # 3. Model config (already loaded)
+    
+    if args.random_teams:
+        model_a.team = None
+        model_b.team = None
+        print("  Team Override: Force Random")
+
+    if args.team_a:
+        model_a.team = args.team_a
+        print(f"  Team A Override: {args.team_a}")
+    
+    if args.team_b:
+        model_b.team = args.team_b
+        print(f"  Team B Override: {args.team_b}")
 
     # Create battle logger
     logger = None if args.no_log else BattleLogger(log_dir="logs", enabled=True)

@@ -40,6 +40,9 @@ models:
     model: "gemini/gemini-3-flash-preview"
     temperature: 0.7
     team: "Raw-Teams/Dragonite-Lead-Boom-Offense.md"
+    api_price_input: 0.50
+    api_price_output: 3.00
+
 
   # OpenAI
   - name: "GPT-5.1"
@@ -49,8 +52,11 @@ models:
 
   - name: "GPT-5-Mini"
     model: "gpt-5-mini"
-    temperature: 0.7
+    temperature: 1.0
     team: "Raw-Teams/Metagross-Scizor-Offense.md"
+    api_price_input: 0.25
+    api_price_output: 2.00
+
 
   - name: "GPT-4.1"
     model: "gpt-4.1"
@@ -62,12 +68,18 @@ models:
     model: "deepseek/deepseek-reasoner"
     temperature: 0.7
     team: "Raw-Teams/My-Blue-Heaven.md"
+    api_price_input: 0.28
+    api_price_output: 0.42
+
 
   # xAI
   - name: "Grok-4"
     model: "xai/grok-4"
     temperature: 0.7
     team: "Raw-Teams/Zapdos-Hyperoffense.md"
+    api_price_input: 0.20
+    api_price_output: 0.50
+
 
 # Example: Force a model to use random bot (for testing/baseline)
 # - name: "Random-Baseline"

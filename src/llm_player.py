@@ -40,7 +40,11 @@ IMPORTANT:
 Your final response MUST include:
 - ACTION: move <move_name> or switch <pokemon_name>
 - REASONING: why you chose this (1 sentence)
-- PREDICTION: what you expect opponent to do (optional)
+Your final response MAY include:
+- PREDICTION: what you expect opponent to do next, e.g., "switch Gengar", "move thunderbolt". 
+    You may provide a list of predictions if you are uncertain.
+    If you are acting unilaterally, such as when making a forced switch, do not provide a prediction.
+- CONFIDENCE: your perceived chance of winning this battle (0-100)
 
 Available actions:
 - move <name>: Use one of your available moves
@@ -59,7 +63,11 @@ You receive a summary of the current battle state.
 Your final response MUST include:
 - ACTION: move <move_name> or switch <pokemon_name>
 - REASONING: why you chose this (1 sentence)
-- PREDICTION: what you expect opponent to do (optional)
+Your final response MAY include:
+- PREDICTION: what you expect opponent to do next, e.g., "switch Gengar", "move thunderbolt". 
+    You may provide a list of predictions if you are uncertain.
+    If you are acting unilaterally, such as when making a forced switch, do not provide a prediction.
+- CONFIDENCE: your perceived chance of winning this battle (0-100)
 
 Available actions:
 - move <name>: Use one of your available moves
@@ -133,122 +141,125 @@ class LLMPlayer(AgentPlayer):
         Execute generation with streaming to capture partial output on timeout.
         Returns a mock response object compatible with the non-streaming response.
         """
-        response_content = ""
-        response_reasoning = ""
-        response_tool_calls_dict = {} # index -> {id, type, name, args}
-        input_tokens = 0
-        output_tokens = 0
-        reasoning_tokens = 0
+        import asyncio
         
-        try:
-            # Use stream_options to try getting usage if supported
-            stream = await litellm.acompletion(
-                model=self.model,
-                messages=messages,
-                tools=tools,
-                tool_choice=tool_choice,
-                temperature=self.temperature,
-                max_tokens=max_tokens or self.max_tokens,
-                timeout=self.timeout,
-                stream=True,
-                stream_options={"include_usage": True}
-            )
+        while True:
+            response_content = ""
+            response_reasoning = ""
+            response_tool_calls_dict = {} # index -> {id, type, name, args}
+            input_tokens = 0
+            output_tokens = 0
+            reasoning_tokens = 0
             
-            async for chunk in stream:
-                # Handle usage if present (often in last chunk)
-                if hasattr(chunk, 'usage') and chunk.usage:
-                    input_tokens = getattr(chunk.usage, 'prompt_tokens', 0)
-                    output_tokens = getattr(chunk.usage, 'completion_tokens', 0)
-                    
-                    # Track reasoning tokens if available
-                    details = getattr(chunk.usage, 'completion_tokens_details', None)
-                    if details:
-                        r_tokens = getattr(details, 'reasoning_tokens', 0)
-                        if r_tokens:
-                            reasoning_tokens = r_tokens
-                    elif hasattr(chunk.usage, 'reasoning_tokens'):
-                        reasoning_tokens = getattr(chunk.usage, 'reasoning_tokens', 0)
+            try:
+                # Use stream_options to try getting usage if supported
+                stream = await litellm.acompletion(
+                    model=self.model,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    temperature=self.temperature,
+                    max_tokens=max_tokens or self.max_tokens,
+                    timeout=self.timeout,
+                    stream=True,
+                    stream_options={"include_usage": True}
+                )
                 
-                if not chunk.choices:
-                    continue
-                    
-                delta = chunk.choices[0].delta
-                
-                # Content
-                if delta.content:
-                    response_content += delta.content
-                    
-                # Reasoning
-                if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
-                    response_reasoning += delta.reasoning_content
-                    
-                # Tool calls
-                if delta.tool_calls:
-                    for tc in delta.tool_calls:
-                        idx = tc.index
-                        if idx not in response_tool_calls_dict:
-                            response_tool_calls_dict[idx] = {
-                                "id": "", "type": "function", "function": {"name": "", "arguments": ""}
-                            }
+                async for chunk in stream:
+                    # Handle usage if present (often in last chunk)
+                    if hasattr(chunk, 'usage') and chunk.usage:
+                        input_tokens = getattr(chunk.usage, 'prompt_tokens', 0)
+                        output_tokens = getattr(chunk.usage, 'completion_tokens', 0)
                         
-                        entry = response_tool_calls_dict[idx]
-                        if tc.id: entry["id"] += tc.id
-                        if tc.type: entry["type"] = tc.type
-                        if tc.function:
-                            if tc.function.name: entry["function"]["name"] += tc.function.name
-                            if tc.function.arguments: entry["function"]["arguments"] += tc.function.arguments
-
-            # Reconstruct objects to mimic non-streaming response
-            class MockFunction:
-                def __init__(self, name, args):
-                    self.name = name
-                    self.arguments = args
-            
-            class MockToolCall:
-                def __init__(self, id, type, name, args):
-                    self.id = id
-                    self.type = type
-                    self.function = MockFunction(name, args)
-            
-            final_tool_calls = []
-            for idx in sorted(response_tool_calls_dict.keys()):
-                entry = response_tool_calls_dict[idx]
-                # If ID is missing (common in streaming), generate one or leave empty
-                tid = entry["id"] or f"call_{idx}"
-                final_tool_calls.append(MockToolCall(tid, entry["type"], entry["function"]["name"], entry["function"]["arguments"]))
+                        # Track reasoning tokens if available
+                        details = getattr(chunk.usage, 'completion_tokens_details', None)
+                        if details:
+                            r_tokens = getattr(details, 'reasoning_tokens', 0)
+                            if r_tokens:
+                                reasoning_tokens = r_tokens
+                        elif hasattr(chunk.usage, 'reasoning_tokens'):
+                            reasoning_tokens = getattr(chunk.usage, 'reasoning_tokens', 0)
+                    
+                    if not chunk.choices:
+                        continue
+                        
+                    delta = chunk.choices[0].delta
+                    
+                    # Content
+                    if delta.content:
+                        response_content += delta.content
+                        
+                    # Reasoning
+                    if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                        response_reasoning += delta.reasoning_content
+                        
+                    # Tool calls
+                    if delta.tool_calls:
+                        for tc in delta.tool_calls:
+                            idx = tc.index
+                            if idx not in response_tool_calls_dict:
+                                response_tool_calls_dict[idx] = {
+                                    "id": "", "type": "function", "function": {"name": "", "arguments": ""}
+                                }
+                            
+                            entry = response_tool_calls_dict[idx]
+                            if tc.id: entry["id"] += tc.id
+                            if tc.type: entry["type"] = tc.type
+                            if tc.function:
+                                if tc.function.name: entry["function"]["name"] += tc.function.name
+                                if tc.function.arguments: entry["function"]["arguments"] += tc.function.arguments
+    
+                # Reconstruct objects to mimic non-streaming response
+                class MockFunction:
+                    def __init__(self, name, args):
+                        self.name = name
+                        self.arguments = args
                 
-            class MockMessage:
-                def __init__(self, content, reasoning, tool_calls):
-                    self.content = content
-                    self.reasoning_content = reasoning
-                    self.tool_calls = tool_calls
-            
-            class MockChoice:
-                def __init__(self, msg):
-                    self.message = msg
+                class MockToolCall:
+                    def __init__(self, id, type, name, args):
+                        self.id = id
+                        self.type = type
+                        self.function = MockFunction(name, args)
+                
+                final_tool_calls = []
+                for idx in sorted(response_tool_calls_dict.keys()):
+                    entry = response_tool_calls_dict[idx]
+                    # If ID is missing (common in streaming), generate one or leave empty
+                    tid = entry["id"] or f"call_{idx}"
+                    final_tool_calls.append(MockToolCall(tid, entry["type"], entry["function"]["name"], entry["function"]["arguments"]))
                     
-            class MockUsage:
-                def __init__(self, inp, out, reasoning=0):
-                    self.prompt_tokens = inp
-                    self.completion_tokens = out
-                    self.reasoning_tokens = reasoning
-                    self.completion_tokens_details = type('obj', (object,), {'reasoning_tokens': reasoning})
-                    
-            class MockResponse:
-                def __init__(self, choice, usage):
-                    self.choices = [choice]
-                    self.usage = usage
-            
-            return MockResponse(
-                MockChoice(MockMessage(response_content, response_reasoning, final_tool_calls)), 
-                MockUsage(input_tokens, output_tokens, reasoning_tokens)
-            )
-
-        except Exception as e:
-            # Attach partial content to exception for recovery
-            e.partial_content = response_content
-            e.partial_reasoning = response_reasoning
-            raise e
+                class MockMessage:
+                    def __init__(self, content, reasoning, tool_calls):
+                        self.content = content
+                        self.reasoning_content = reasoning
+                        self.tool_calls = tool_calls
+                
+                class MockChoice:
+                    def __init__(self, msg):
+                        self.message = msg
+                        
+                class MockUsage:
+                    def __init__(self, inp, out, reasoning=0):
+                        self.prompt_tokens = inp
+                        self.completion_tokens = out
+                        self.reasoning_tokens = reasoning
+                        self.completion_tokens_details = type('obj', (object,), {'reasoning_tokens': reasoning})
+                        
+                class MockResponse:
+                    def __init__(self, choice, usage):
+                        self.choices = [choice]
+                        self.usage = usage
+                
+                return MockResponse(
+                    MockChoice(MockMessage(response_content, response_reasoning, final_tool_calls)), 
+                    MockUsage(input_tokens, output_tokens, reasoning_tokens)
+                )
+    
+            except Exception as e:
+                # Log and retry as requested by user ("it should wait")
+                print(f"[{self.username}] API Error: {e}. Retrying in 60s...")
+                await asyncio.sleep(60)
+                continue
 
     async def _run_reasoning_subagent(
         self,
@@ -295,7 +306,8 @@ YOUR DECISION HISTORY (with reasoning):
 Your final response must include:
 - ACTION: move <name> or switch <name>
 - REASONING: why you chose this (1 sentence)
-- PREDICTION: what you expect opponent to do (optional)"""
+- PREDICTION: what you expect opponent to do next, e.g., "switch Gengar", "move thunderbolt"
+- CONFIDENCE: your perceived chance of winning this battle (0-100)"""
 
         messages = [
             {"role": "system", "content": self.system_prompt},
@@ -535,7 +547,7 @@ Your final response must include:
     def _parse_subagent_response(self, content: str, plan_updates: list) -> dict:
         """Parse structured response from subagent."""
         import re
-        result = {"action": "", "reasoning": "", "prediction": "", "plan_updates": plan_updates}
+        result = {"action": "", "reasoning": "", "prediction": "", "confidence": "", "plan_updates": plan_updates}
 
         # Remove thinking blocks for parsing
         clean_content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL).strip()
@@ -558,6 +570,11 @@ Your final response must include:
         if "PREDICTION:" in clean_content:
             prediction_line = clean_content.split("PREDICTION:")[-1].split("\n")[0].strip()
             result["prediction"] = prediction_line
+
+        # Parse CONFIDENCE: line
+        if "CONFIDENCE:" in clean_content:
+            confidence_line = clean_content.split("CONFIDENCE:")[-1].split("\n")[0].strip()
+            result["confidence"] = confidence_line.rstrip("%").strip()
 
         # Fallback: try to find move/switch anywhere
         if not result["action"]:

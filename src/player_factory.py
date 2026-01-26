@@ -2,6 +2,7 @@
 
 import random
 import string
+import uuid
 from typing import Optional, Union, TYPE_CHECKING
 from poke_env.player import Player, RandomPlayer, SimpleHeuristicsPlayer
 from poke_env import AccountConfiguration, ServerConfiguration
@@ -106,6 +107,7 @@ class PlayerFactory:
         use_llm = not force_fallback and has_api_key(model)
         
         if use_llm:
+            player_id = f"{model}-{uuid.uuid4().hex[:8]}"
             player = LLMPlayer(
                 model=model,
                 temperature=temperature,
@@ -116,6 +118,7 @@ class PlayerFactory:
                 team=team_to_use,
                 server_configuration=self.server_config,
                 battle_logger=self.battle_logger,
+                player_id=player_id,
                 **kwargs
             )
             return player, True

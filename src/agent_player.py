@@ -24,24 +24,29 @@ class AgentPlayer(Player):
         battle_logger: Optional["BattleLogger"] = None,
         verbose: bool = False,
         team_name: str = "unknown",
+        player_id: Optional[str] = None,
         **kwargs
     ):
         super().__init__(**kwargs)
         self.battle_logger = battle_logger
         self.verbose = verbose
         self.team_name = team_name
-        
+        self.player_id = player_id or self.username
+
         # Per-battle state
         self.decision_history: dict[str, list[dict]] = {}  # battle_id -> decisions
         self.battle_plans: dict[str, dict] = {}  # battle_id -> {goals: [], predictions: {}}
         self.known_opponents: dict[str, str] = {}  # username -> model_id
+        self.known_opponent_ids: dict[str, str] = {}  # username -> player_id
 
-    def register_opponent(self, username: str, model: str) -> None:
+    def register_opponent(self, username: str, model: str, player_id: Optional[str] = None) -> None:
         """
         Register a known opponent model.
         Useful when we know who we are playing against (e.g. competitive matching).
         """
         self.known_opponents[username] = model
+        if player_id:
+            self.known_opponent_ids[username] = player_id
 
     async def choose_move(self, battle: AbstractBattle) -> str:
         """
@@ -54,19 +59,23 @@ class AgentPlayer(Player):
         6. Return order
         """
         battle_id = battle.battle_tag
-        
+
         # 1. Initialize state if new battle
         self._ensure_battle_state(battle)
-        
+
+        # 1b. Log protocol events incrementally
+        if self.battle_logger and hasattr(battle, 'observations'):
+            self.battle_logger.log_protocol(battle_id, battle.observations)
+
         # 2. Update previous turn's outcome (did prediction match reality?)
         prev_events = get_recent_events(battle)
         self._update_previous_outcome(battle_id, prev_events)
-        
+
         # 3. Prepare Context
         current_state = format_battle_state(battle)
         decision_history_str = self._format_decision_history(battle_id)
         battle_plan = self.battle_plans[battle_id]
-        
+
         # Context dict to pass to decision maker
         turn_context = {
             "battle": battle,
@@ -76,23 +85,24 @@ class AgentPlayer(Player):
             "decision_history_str": decision_history_str,
             "battle_plan": battle_plan,
         }
-        
+
         # 4. Make Decision (Abstract)
-        # Should return dict with keys: action, reasoning, prediction, (optional) log_data
+        # Should return dict with keys: action, reasoning, prediction, confidence, (optional) log_data
         decision_result = await self._make_decision(turn_context)
-        
+
         action_string = decision_result.get("action", "")
         reasoning = decision_result.get("reasoning", "")
         prediction = decision_result.get("prediction", "")
-        
+        confidence = decision_result.get("confidence", "")
+
         # 5. Record decision
-        self._record_decision(battle_id, battle.turn, action_string, reasoning, prediction)
-        
+        self._record_decision(battle_id, battle.turn, action_string, reasoning, prediction, confidence=confidence)
+
         # 6. Log if logger active
         if self.battle_logger:
-            self.battle_logger.log_turn(
+            self.battle_logger.log_action(
                 battle_id=battle_id,
-                player_name=self.username,
+                player_id=self.player_id,
                 turn=battle.turn,
                 observation=prev_events or "(Battle just started)",
                 state=current_state,
@@ -105,9 +115,9 @@ class AgentPlayer(Player):
                 },
                 tokens=decision_result.get("tokens", {}),
                 latency_ms=decision_result.get("latency_ms", 0),
-                battle_plan=battle_plan.get("goals", [])
+                confidence=confidence,
             )
-            
+
         # 7. Convert action to order
         # Subclasses or specific parsing logic might be needed if action_string isn't direct
         if not action_string:
@@ -118,31 +128,31 @@ class AgentPlayer(Player):
                     fallback_reason = "timeout"
                 else:
                     fallback_reason = "api_error"
-            
+
             random_order, random_action_desc = self._choose_random_move_with_description(battle)
-            
+
             # Log the fallback
             if self.battle_logger:
                 self.battle_logger.log_fallback(
                     battle_id=battle_id,
-                    player_name=self.username,
+                    player_id=self.player_id,
                     turn=battle.turn,
                     reason=fallback_reason,
                     random_action=random_action_desc
                 )
-            
+
             if self.verbose:
                 print(f"[{self.username}] FALLBACK ({fallback_reason}): {random_action_desc}")
-            
+
             return random_order
-            
+
         return self.create_order(self._parse_action(action_string, battle))
 
     async def _make_decision(self, context: dict) -> dict:
         """
         Produce a decision based on context.
         Must be implemented by subclasses.
-        Returns dict with: action, reasoning, prediction, etc.
+        Returns dict with: action, reasoning, prediction, confidence, etc.
         """
         raise NotImplementedError
 
@@ -160,55 +170,58 @@ class AgentPlayer(Player):
         if battle_id not in self.decision_history:
             self.decision_history[battle_id] = []
             self.battle_plans[battle_id] = {"goals": [], "predictions": {}}
-            
+
             if self.battle_logger:
                 opponent_name = "opponent"
                 for player in [battle.player_username, battle.opponent_username]:
                     if player and player != self.username:
                         opponent_name = player
                         break
-                
+
                 # Check if we know this opponent's model
                 opponent_model = self.known_opponents.get(opponent_name)
-                
+                opponent_player_id = self.known_opponent_ids.get(opponent_name)
+
                 self.battle_logger.start_battle(
                     battle_id=battle_id,
-                    player_name=self.username,
+                    player_id=self.player_id,
                     model=getattr(self, "model", "human"),
-                    opponent_name=opponent_name,
-                    opponent_model=opponent_model,
+                    showdown_username=self.username,
+                    opponent_player_id=opponent_player_id,
                     player_team=self.team_name,
-                    opponent_team="unknown"
                 )
-                
+
     def _update_previous_outcome(self, battle_id: str, prev_events: str):
         """Update last turn's outcome with reality."""
         if not self.decision_history[battle_id]:
             return
-            
+
         last_decision = self.decision_history[battle_id][-1]
         if last_decision["outcome"] is None:
             last_decision["outcome"] = prev_events[:100] if prev_events else "no events"
-            
-    def _record_decision(self, battle_id: str, turn: int, action: str, reasoning: str, prediction: str):
+
+    def _record_decision(self, battle_id: str, turn: int, action: str, reasoning: str, prediction: str, confidence: str = ""):
         """Append decision to history."""
         self.decision_history[battle_id].append({
             "turn": turn,
             "action": action,
             "reasoning": reasoning,
             "prediction": prediction,
+            "confidence": confidence,
             "outcome": None  # Filled next turn
         })
-        
+
     def _format_decision_history(self, battle_id: str) -> str:
         """Format history for context."""
         lines = []
-        for d in self.decision_history[battle_id][-3:]: 
+        for d in self.decision_history[battle_id][-3:]:
             line = f"T{d['turn']}: {d['action']}"
+            if d.get('confidence'):
+                line += f" [confidence: {d['confidence']}%]"
             if d.get('reasoning'):
                 line += f" | {d['reasoning']}"
             if d.get('prediction') and d.get('outcome'):
-                line += f" → {d['outcome']}"
+                line += f" -> {d['outcome']}"
             lines.append(line)
         return "\n".join(lines)
 
@@ -217,21 +230,21 @@ class AgentPlayer(Player):
         lines = []
         for goal in plan.get("goals", []):
             if goal["status"] == "completed":
-                status = "✓"
+                status = "+"
             elif goal["status"] == "abandoned":
-                status = "✗"
+                status = "x"
             else:
-                status = "○"
+                status = "o"
             lines.append(f"{status} {goal['goal']}")
             if goal.get("notes"):
-                lines.append(f"   └─ {goal['notes']}")
+                lines.append(f"   - {goal['notes']}")
         return "\n".join(lines) if lines else ""
 
     def _choose_random_move_only(self, battle: AbstractBattle) -> str:
         """Fallback random move (without description)."""
         order, _ = self._choose_random_move_with_description(battle)
         return order
-    
+
     def _choose_random_move_with_description(self, battle: AbstractBattle) -> tuple[str, str]:
         """Fallback random move with description of what was chosen."""
         if battle.available_moves:
@@ -250,12 +263,13 @@ class AgentPlayer(Player):
             won = battle.won if battle.won is not None else False
             self.battle_logger.end_battle(
                 battle_id=battle_id,
-                player_name=self.username,
+                player_id=self.player_id,
                 won=won,
                 total_turns=battle.turn,
-                forfeit=False  # poke-env 0.11.0 battle object doesn't track forfeit
+                forfeit=False,
+                battle_observations=getattr(battle, 'observations', None),
             )
-        
+
         if battle_id in self.decision_history:
             del self.decision_history[battle_id]
         if battle_id in self.battle_plans:

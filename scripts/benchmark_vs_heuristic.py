@@ -3,9 +3,9 @@
 
 import asyncio
 import argparse
+import uuid
 import yaml
 import sys
-import uuid
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -113,6 +113,9 @@ async def benchmark_model(
     print(f"  LLM Team: {llm_team_name}")
     print(f"  Heuristic Team: Random (Pool)")
 
+    # Generate player_id for the LLM player
+    player_id = f"{model_config.model}-{uuid.uuid4().hex[:8]}"
+
     # Create players
     llm_player = LLMPlayer(
         account_configuration=AccountConfiguration(llm_username, None),
@@ -126,6 +129,7 @@ async def benchmark_model(
         verbose=verbose,
         battle_logger=battle_logger,
         team_name=llm_team_name,
+        player_id=player_id,
     )
 
     heuristic_player = SimpleHeuristicsPlayer(
@@ -260,7 +264,7 @@ Examples:
     # Create battle logger
     logger = None if args.no_log else BattleLogger(log_dir="logs", enabled=True)
     if logger:
-        print(f"Logging battles to: logs/battles.jsonl")
+        print(f"Logging battles to: logs/battles/")
 
     # Run benchmarks
     results = []

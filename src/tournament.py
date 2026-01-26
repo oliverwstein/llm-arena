@@ -25,7 +25,7 @@ class TournamentConfig:
     save_replays: bool = True
     replay_dir: str = "results/replays"
     teams_dir: str = "Raw-Teams"  # Directory containing team files
-    fallback_type: str = "random"  # "random" or "heuristic" for missing API keys
+    fallback_type: str = "heuristic"  # "random" or "heuristic" for missing API keys
 
 
 @dataclass
@@ -54,7 +54,7 @@ def create_players(
     teams_dir: str = "Raw-Teams",
     save_replays: bool = False,
     replay_dir: str = "replays",
-    fallback_type: str = "random",
+    fallback_type: str = "heuristic",
     battle_logger: Optional["BattleLogger"] = None,
 ) -> list[PlayerInfo]:
     """
@@ -86,7 +86,15 @@ def create_players(
             team_path=config.team,
         )
         player_infos.append(PlayerInfo(player=player, config=config, is_llm=is_llm))
-    
+
+    # Cross-register opponents so each player knows the other's model and player_id
+    for i, info_i in enumerate(player_infos):
+        for j, info_j in enumerate(player_infos):
+            if i != j and hasattr(info_i.player, 'register_opponent'):
+                info_i.player.register_opponent(
+                    info_j.player.username, info_j.config.model,
+                    player_id=getattr(info_j.player, 'player_id', None))
+
     return player_infos
 
 

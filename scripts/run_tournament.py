@@ -122,7 +122,7 @@ Environment:
     # Create battle logger
     logger = None if args.no_log else BattleLogger(log_dir="logs", enabled=True)
     if logger:
-        print(f"Logging battles to: logs/battles.jsonl")
+        print(f"Logging battles to: logs/battles/")
 
     # Run tournament
     results = await run_tournament(config, models, db, battle_logger=logger)

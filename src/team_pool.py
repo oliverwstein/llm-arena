@@ -47,8 +47,12 @@ class TeamPool(Teambuilder):
 
     def yield_team(self) -> str:
         """Return a random team from the pool (called by poke-env)."""
+        return self.get_random_team()[0]
+
+    def get_random_team(self) -> tuple[str, str]:
+        """Return a random team and its name."""
         idx = random.randint(0, len(self.teams) - 1)
-        return self.teams[idx]
+        return self.teams[idx], self.team_names[idx]
 
     def get_team_count(self) -> int:
         """Return number of teams in the pool."""
