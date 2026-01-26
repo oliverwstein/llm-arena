@@ -3,17 +3,16 @@
 
 import asyncio
 import argparse
-import yaml
 import sys
 import uuid
 from pathlib import Path
-from dataclasses import dataclass
 from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from poke_env import AccountConfiguration
 
+from src.config import ModelConfig, load_models_from_yaml, find_model
 from src.llm_player import LLMPlayer, CUSTOM_SERVER_CONFIG
 from src.team_pool import get_team_pool
 from src.env_manager import load_env_file, has_api_key
@@ -23,47 +22,6 @@ from src.battle_logger import BattleLogger
 load_env_file()
 
 BATTLE_FORMAT = "gen4ou"
-
-
-@dataclass
-class ModelConfig:
-    name: str
-    model: str
-    temperature: float = 0.7
-    max_tokens: int = 4096
-    timeout: int = 60
-    team: str = None
-
-
-def load_models_from_yaml(path: str) -> list[ModelConfig]:
-    """Load model configurations from YAML file."""
-    with open(path) as f:
-        data = yaml.safe_load(f)
-
-    models = []
-    for m in data["models"]:
-        models.append(ModelConfig(
-            name=m["name"],
-            model=m["model"],
-            temperature=m.get("temperature", 0.7),
-            max_tokens=m.get("max_tokens", 4096),
-            timeout=m.get("timeout", 60),
-            team=m.get("team"),
-        ))
-    return models
-
-
-def find_model(query: str, model_list: list[ModelConfig]) -> Optional[ModelConfig]:
-    """Find a model by name or model ID."""
-    # Exact match first
-    for m in model_list:
-        if m.name == query or m.model == query:
-            return m
-    # Partial match
-    for m in model_list:
-        if query.lower() in m.name.lower() or query.lower() in m.model.lower():
-            return m
-    return None
 
 
 def resolve_team(team_path: Optional[str], team_pool):

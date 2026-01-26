@@ -4,16 +4,15 @@
 import asyncio
 import argparse
 import uuid
-import yaml
 import sys
 from pathlib import Path
-from dataclasses import dataclass
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from poke_env.player import SimpleHeuristicsPlayer
 from poke_env import ServerConfiguration, AccountConfiguration
 
+from src.config import ModelConfig, load_models_from_yaml
 from src.llm_player import LLMPlayer
 from src.team_pool import get_team_pool
 from src.env_manager import load_env_file, has_api_key
@@ -28,32 +27,6 @@ SERVER_CONFIG = ServerConfiguration(
 )
 
 BATTLE_FORMAT = "gen4ou"
-
-
-@dataclass
-class ModelConfig:
-    name: str
-    model: str
-    temperature: float = 0.7
-    max_tokens: int = 150
-    team: str = None
-
-
-def load_models_from_yaml(path: str) -> list[ModelConfig]:
-    """Load model configurations from YAML file."""
-    with open(path) as f:
-        data = yaml.safe_load(f)
-
-    models = []
-    for m in data["models"]:
-        models.append(ModelConfig(
-            name=m["name"],
-            model=m["model"],
-            temperature=m.get("temperature", 0.7),
-            max_tokens=m.get("max_tokens", 150),
-            team=m.get("team"),
-        ))
-    return models
 
 
 async def benchmark_model(
@@ -269,7 +242,6 @@ Examples:
     # Run benchmarks
     results = []
     for model_config in models_to_run:
-        print(f"DEBUG: verbose={args.verbose}, timeout={args.timeout}")
         result = await benchmark_model(model_config, team_pool, args.battles, verbose=args.verbose, timeout=args.timeout, battle_logger=logger)
         results.append(result)
 

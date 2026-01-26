@@ -1,6 +1,7 @@
 """LLM-powered Pokemon battle player with tool-calling capabilities."""
 
 import json
+import random
 import time
 from typing import Optional, TYPE_CHECKING
 from poke_env import ServerConfiguration
@@ -143,6 +144,7 @@ class LLMPlayer(AgentPlayer):
         """
         import asyncio
         
+        retry_count = 0
         while True:
             response_content = ""
             response_reasoning = ""
@@ -203,7 +205,7 @@ class LLMPlayer(AgentPlayer):
                                 }
                             
                             entry = response_tool_calls_dict[idx]
-                            if tc.id: entry["id"] += tc.id
+                            if tc.id: entry["id"] = tc.id
                             if tc.type: entry["type"] = tc.type
                             if tc.function:
                                 if tc.function.name: entry["function"]["name"] += tc.function.name
@@ -255,10 +257,40 @@ class LLMPlayer(AgentPlayer):
                     MockUsage(input_tokens, output_tokens, reasoning_tokens)
                 )
     
+            except litellm.RateLimitError as e:
+                retry_count += 1
+                if retry_count > 15:
+                    raise
+                wait = min(10 * (2 ** retry_count) + random.uniform(0, 5), 300)
+                print(f"[{self.username}] Rate limited. Retry {retry_count}/15 in {wait:.0f}s")
+                await asyncio.sleep(wait)
+                continue
+
+            except litellm.Timeout as e:
+                retry_count += 1
+                if retry_count > 2:
+                    raise
+                print(f"[{self.username}] Timeout. Retry {retry_count}/2...")
+                continue
+
+            except (litellm.APIConnectionError, litellm.ServiceUnavailableError) as e:
+                retry_count += 1
+                if retry_count > 3:
+                    raise
+                wait = 15 * retry_count
+                print(f"[{self.username}] Connection error. Retry {retry_count}/3 in {wait}s")
+                await asyncio.sleep(wait)
+                continue
+
+            except litellm.ContextWindowExceededError:
+                raise  # Structural - don't retry
+
             except Exception as e:
-                # Log and retry as requested by user ("it should wait")
-                print(f"[{self.username}] API Error: {e}. Retrying in 60s...")
-                await asyncio.sleep(60)
+                retry_count += 1
+                if retry_count > 2:
+                    raise
+                print(f"[{self.username}] Unexpected error: {e}. Retry {retry_count}/2...")
+                await asyncio.sleep(10)
                 continue
 
     async def _run_reasoning_subagent(
@@ -277,9 +309,6 @@ class LLMPlayer(AgentPlayer):
         and logging data (raw_response, tool_calls, tokens, latency_ms).
         """
         start_time = time.time()
-
-        # Format strategic plan
-        plan_text = "" # self._format_battle_plan(battle_plan)
 
         # Build subagent prompt with all objective information
         if self.use_tools:

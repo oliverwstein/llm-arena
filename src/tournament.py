@@ -11,6 +11,7 @@ from .team_pool import get_team_pool
 from .results import ResultsDB
 from .player_factory import PlayerFactory
 from .env_manager import print_api_key_status
+from .config import ModelConfig, load_models_from_yaml, find_model  # Re-export for backward compat
 
 if TYPE_CHECKING:
     from .battle_logger import BattleLogger
@@ -28,16 +29,8 @@ class TournamentConfig:
     fallback_type: str = "heuristic"  # "random" or "heuristic" for missing API keys
 
 
-@dataclass
-class ModelConfig:
-    """Configuration for an LLM model."""
-    name: str           # Display name
-    model: str          # LiteLLM model ID
-    temperature: float = 0.7
-    max_tokens: int = 4096        # Tool-calling needs more tokens
-    timeout: float = 60.0         # LLM timeout in seconds
-    force_fallback: bool = False  # Force use of fallback bot
-    team: Optional[str] = None    # Specific team path (optional)
+# ModelConfig is now imported from src.config - kept here for backward compatibility
+# from .config import ModelConfig
 
 
 @dataclass
