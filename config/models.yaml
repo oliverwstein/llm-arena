@@ -31,13 +31,13 @@ models:
     team: "Raw-Teams/Forretress-Zapdos-Balance.md"
 
   # Google
-  - name: "Gemini-3.0-Pro"
-    model: "gemini/gemini-3.0-pro"
+  - name: "Gemini-3-Pro"
+    model: "gemini/gemini-3-pro-preview"
     temperature: 0.7
     team: "Raw-Teams/Gliscor-Lucario-Spikes-Stack.md"
 
-  - name: "Gemini-3.0-Flash"
-    model: "gemini/gemini-3.0-flash"
+  - name: "Gemini-3-Flash"
+    model: "gemini/gemini-3-flash-preview"
     temperature: 0.7
     team: "Raw-Teams/Dragonite-Lead-Boom-Offense.md"
 

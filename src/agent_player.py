@@ -191,12 +191,12 @@ class AgentPlayer(Player):
     def _format_decision_history(self, battle_id: str) -> str:
         """Format history for context."""
         lines = []
-        for d in self.decision_history[battle_id][-8:]:  # Last 8 turns
+        for d in self.decision_history[battle_id]: 
             line = f"T{d['turn']}: {d['action']}"
             if d.get('reasoning'):
                 line += f" | {d['reasoning']}"
             if d.get('prediction') and d.get('outcome'):
-                line += f" → {d['outcome'][:50]}"
+                line += f" → {d['outcome']}"
             lines.append(line)
         return "\n".join(lines)
 
@@ -241,7 +241,7 @@ class AgentPlayer(Player):
                 player_name=self.username,
                 won=won,
                 total_turns=battle.turn,
-                forfeit=battle.forfeit
+                forfeit=False  # poke-env 0.11.0 battle object doesn't track forfeit
             )
         
         if battle_id in self.decision_history:
