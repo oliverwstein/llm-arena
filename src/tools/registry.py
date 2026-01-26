@@ -237,24 +237,24 @@ TOOLS: dict[str, Tool] = {
     ),
 
     # Plan tools
-    "plan": Tool(
-        name="plan",
-        description="Review your current strategic battle plan and goals.",
-        handler=_handle_plan,
-        params=[],
-        needs_context=True,
-    ),
-    "plan_update": Tool(
-        name="plan_update",
-        description="Update your long-term strategic plan: add goals, mark complete, abandon, or add notes.",
-        handler=_handle_plan_update,
-        params=[
-            ToolParam("action", "string", "Action to perform", enum=["add_goal", "complete_goal", "abandon_goal", "add_note"]),
-            ToolParam("goal_id", "integer", "Goal ID (for complete_goal, abandon_goal, add_note)", required=False),
-            ToolParam("text", "string", "Goal text (for add_goal) or note text (for add_note)", required=False),
-        ],
-        needs_context=True,
-    ),
+    # "plan": Tool(
+    #     name="plan",
+    #     description="Review your current strategic battle plan and goals.",
+    #     handler=_handle_plan,
+    #     params=[],
+    #     needs_context=True,
+    # ),
+    # "plan_update": Tool(
+    #     name="plan_update",
+    #     description="Update your long-term strategic plan: add goals, mark complete, abandon, or add notes.",
+    #     handler=_handle_plan_update,
+    #     params=[
+    #         ToolParam("action", "string", "Action to perform", enum=["add_goal", "complete_goal", "abandon_goal", "add_note"]),
+    #         ToolParam("goal_id", "integer", "Goal ID (for complete_goal, abandon_goal, add_note)", required=False),
+    #         ToolParam("text", "string", "Goal text (for add_goal) or note text (for add_note)", required=False),
+    #     ],
+    #     needs_context=True,
+    # ),
 }
 
 
@@ -479,7 +479,7 @@ def get_help_text() -> str:
         "Field": ["field", "state"],
         "Type": ["type"],
         "Info": ["pokedex", "movedex"],  # Note: use "movedex <name>" to avoid conflict with action
-        "Planning": ["plan", "plan_update"],
+        # "Planning": ["plan", "plan_update"],
         "Help": ["help"],
     }
 

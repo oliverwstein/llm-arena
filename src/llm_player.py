@@ -268,14 +268,13 @@ class LLMPlayer(AgentPlayer):
         start_time = time.time()
 
         # Format strategic plan
-        plan_text = self._format_battle_plan(battle_plan)
+        plan_text = "" # self._format_battle_plan(battle_plan)
 
         # Build subagent prompt with all objective information
         if self.use_tools:
             instructions = """Analyze the situation. You may:
 1. Use tools to gather information
-2. Update your strategic plan (add/complete goals)
-3. Make your decision"""
+2. Make your decision"""
         else:
             instructions = """Analyze the situation.
 1. Review the battle log and current state
@@ -290,9 +289,6 @@ CURRENT STATE:
 
 YOUR DECISION HISTORY (with reasoning):
 {decision_history if decision_history else "(First turn)"}
-
-YOUR STRATEGIC PLAN:
-{plan_text if plan_text else "(No plan yet - consider setting goals)"}
 
 {instructions}
 
