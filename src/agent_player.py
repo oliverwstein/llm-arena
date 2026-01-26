@@ -34,6 +34,14 @@ class AgentPlayer(Player):
         # Per-battle state
         self.decision_history: dict[str, list[dict]] = {}  # battle_id -> decisions
         self.battle_plans: dict[str, dict] = {}  # battle_id -> {goals: [], predictions: {}}
+        self.known_opponents: dict[str, str] = {}  # username -> model_id
+
+    def register_opponent(self, username: str, model: str) -> None:
+        """
+        Register a known opponent model.
+        Useful when we know who we are playing against (e.g. competitive matching).
+        """
+        self.known_opponents[username] = model
 
     async def choose_move(self, battle: AbstractBattle) -> str:
         """
@@ -159,12 +167,16 @@ class AgentPlayer(Player):
                     if player and player != self.username:
                         opponent_name = player
                         break
+                
+                # Check if we know this opponent's model
+                opponent_model = self.known_opponents.get(opponent_name)
+                
                 self.battle_logger.start_battle(
                     battle_id=battle_id,
                     player_name=self.username,
                     model=getattr(self, "model", "human"),
                     opponent_name=opponent_name,
-                    opponent_model=None,
+                    opponent_model=opponent_model,
                     player_team=self.team_name,
                     opponent_team="unknown"
                 )
@@ -191,7 +203,7 @@ class AgentPlayer(Player):
     def _format_decision_history(self, battle_id: str) -> str:
         """Format history for context."""
         lines = []
-        for d in self.decision_history[battle_id]: 
+        for d in self.decision_history[battle_id][-3:]: 
             line = f"T{d['turn']}: {d['action']}"
             if d.get('reasoning'):
                 line += f" | {d['reasoning']}"

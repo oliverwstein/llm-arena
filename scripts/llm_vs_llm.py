@@ -159,6 +159,10 @@ async def run_battle(
         team_name=team_b_name,
     )
 
+    # Register opponents so they can log the enemy model name correctly
+    player_a.register_opponent(username_b, model_b.model)
+    player_b.register_opponent(username_a, model_a.model)
+
     print(f"\n  Running {n_battles} battles...")
 
     try:

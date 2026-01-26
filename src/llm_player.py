@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 # Custom server configuration for port 8088
 CUSTOM_SERVER_CONFIG = ServerConfiguration(
-    websocket_url="ws://localhost:8088/showdown/websocket",
+    websocket_url="ws://localhost:8000/showdown/websocket",
     authentication_url="https://play.pokemonshowdown.com/action.php?"
 )
 
@@ -178,7 +178,7 @@ class LLMPlayer(AgentPlayer):
                 if delta.content:
                     response_content += delta.content
                     
-                # Reasoning (DeepSeek)
+                # Reasoning
                 if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
                     response_reasoning += delta.reasoning_content
                     
