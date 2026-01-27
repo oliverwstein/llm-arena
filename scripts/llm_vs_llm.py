@@ -78,8 +78,8 @@ async def run_battle(
 
     # Create unique usernames and player IDs
     session_id = str(uuid.uuid4())[:8]
-    username_a = f"L-{session_id}-{model_a.name}"[:18]
-    username_b = f"L-{session_id}-{model_b.name}"[:18]
+    username_a = f"{model_a.name}-{session_id}"[:18]
+    username_b = f"{model_b.name}-{session_id}"[:18]
 
     # Ensure unique if same model
     if username_a == username_b:
