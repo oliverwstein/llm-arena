@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from poke_env.player.player import AbstractBattle
 
 
-# Custom server configuration for port 8088
+# Custom server configuration for port 8000
 CUSTOM_SERVER_CONFIG = ServerConfiguration(
     websocket_url="ws://localhost:8000/showdown/websocket",
     authentication_url="https://play.pokemonshowdown.com/action.php?"

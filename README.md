@@ -105,6 +105,7 @@ python scripts/benchmark_vs_heuristic.py --all --battles 10
 # Run a round-robin tournament
 python scripts/run_round_robin.py generate --models Claude-Sonnet-4.5 GPT-5.1 Gemini-3-Flash --games-per-pair 3
 python scripts/run_round_robin.py run --manifest logs/{tournament}/manifest.json
+NOTE: DOES NOT WORK, WHAT I AM TRYING TO FIX
 ```
 
 ## Project Structure
