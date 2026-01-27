@@ -20,83 +20,11 @@ Examples:
   # Run with mock players (for testing)
   python3 scripts/run_round_robin.py run --manifest logs/{tournament-name}/manifest.json --mock
 
-PLAN FOR REFACTORING:
- Refactor run_round_robin.py: Player Pool Reuse                                                                                                  
-                                                                                                                                                 
- Problem                                                                                                                                         
-                                                                                                                                                 
- run_round_robin.py creates new LLMPlayer/MockPlayer instances for every match. This is wasteful (repeated websocket connections, no cross-match 
-  state) and diverges from the pattern in tournament.py which creates players once.                                                              
-                                                                                                                                                 
- Approach: Player Pool per Model                                                                                                                 
-                                                                                                                                                 
- Create a pool of per_model_concurrent player instances per model using asyncio.Queue. Workers acquire a player from the pool, prepare it for    
- the specific match (set team, logger, opponents), run the battle, then return it.                                                               
-                                                                                                                                                 
- This preserves the existing concurrency model while eliminating per-match player construction.                                                  
-                                                                                                                                                 
- ---                                                                                                                                             
- Changes                                                                                                                                         
-                                                                                                                                                 
- 1. src/agent_player.py - Add two methods to AgentPlayer                                                                                         
-                                                                                                                                                 
- prepare_for_battle(team, team_name, battle_logger) (after register_opponent, ~line 49):                                                         
- - Calls self.update_team(team) (inherited from poke-env Player)                                                                                 
- - Sets self.team_name and optionally self.battle_logger                                                                                         
-                                                                                                                                                 
- clear_opponent_registry():                                                                                                                      
- - Clears self.known_opponents and self.known_opponent_ids                                                                                       
- - Needed because pool players face different opponents each match                                                                               
-                                                                                                                                                 
- 2. scripts/run_round_robin.py - Four changes                                                                                                    
-                                                                                                                                                 
- a) Add create_player_pools() function (after load_manifest):                                                                                    
- - For each model, create per_model_concurrent player instances                                                                                  
- - Players constructed with team=None (safe - poke-env stores self._team = None)                                                                 
- - Usernames: {model_name[:max]}-{i} where i = pool index (0 to N-1)                                                                             
- - Store in asyncio.Queue per model name                                                                                                         
- - Returns dict[str, asyncio.Queue]                                                                                                              
-                                                                                                                                                 
- b) Refactor run_match() to accept pre-created players:                                                                                          
- - New params: player_a, player_b (replace internal player creation)                                                                             
- - Call prepare_for_battle() and clear_opponent_registry() + register_opponent() on each                                                         
- - Determine winner via battle.won/battle.lost on the battle object (not n_won_battles)                                                          
- - Call player_a.reset_battles() / player_b.reset_battles() after extracting winner                                                              
- - Remove all LLMPlayer(...) / MockPlayer(...) construction from this function                                                                   
-                                                                                                                                                 
- c) Refactor worker() inside run_tournament():                                                                                                   
- - Acquire players: player_a = await player_pools[model_a_name].get()                                                                            
- - Pass them to run_match()                                                                                                                      
- - In finally block: return both players to their pools via pool.put_nowait(player)                                                              
- - On error: try reset_battles() on both players before returning to pool                                                                        
-                                                                                                                                                 
- d) Create pools at start of run_tournament() (after team_pool load, ~line 360):                                                                 
- - player_pools = create_player_pools(models_by_name, per_model_concurrent, use_mock, mock_error_rate)                                           
-                                                                                                                                                 
- ---                                                                                                                                             
- Key Design Details                                                                                                                              
-                                                                                                                                                 
- - Winner detection: Check battle.won/battle.lost on the battle object BEFORE calling reset_battles(). The current n_won_battles approach would  
- accumulate across reuses.                                                                                                                       
- - team=None at construction: Safe. prepare_for_battle() always sets the team before the first match. poke-env's update_team() accepts packed    
- team strings.                                                                                                                                   
- - Concurrency safety: The existing scheduler (get_best_match) already enforces per-model concurrency via current_load. The pool acts as a       
- safety net - await pool.get() blocks if exhausted.                                                                                              
- - WebSocket reuse: Pool players keep their websocket connections alive across matches - a performance win.                                      
- - Logging: Each match still creates its own MatchLogger. It's set on the player via prepare_for_battle() before each match. Since each pool     
- player handles one battle at a time, there's no conflict.                                                                                       
-                                                                                                                                                 
- Files Modified                                                                                                                                  
-                                                                                                                                                 
- - src/agent_player.py - Add prepare_for_battle() and clear_opponent_registry()                                                                  
- - scripts/run_round_robin.py - Add create_player_pools(), refactor run_match(), worker(), and run_tournament()                                  
-                                                                                                                                                 
- Verification                                                                                                                                    
-                                                                                                                                                 
- 1. Run python3 scripts/run_round_robin.py generate --models <2+ models> --games-per-pair 2                                                      
- 2. Run python3 scripts/run_round_robin.py run --manifest <path> --mock to test with mock players                                                
- 3. Verify matches complete, manifest updates correctly, logs are written per match                                                              
- 4. Verify --mock --concurrent 4 --per-model-concurrent 2 works (concurrent execution)  
+Architecture:
+  - Player Pool: Creates `per_model_concurrent` reusable player instances per model
+  - Workers acquire players from pools, run matches, then return them
+  - WebSocket connections are reused across matches for efficiency
+  - Each match gets its own MatchLogger set via prepare_for_battle()
 """
 
 import asyncio
@@ -284,28 +212,74 @@ def load_manifest(path: str) -> dict:
         return json.load(f)
 
 
+def create_player_pools(
+    models_by_name: dict[str, ModelConfig],
+    per_model_concurrent: int,
+    use_mock: bool = False,
+    mock_error_rate: float = 0.0,
+) -> dict[str, asyncio.Queue]:
+    """
+    Create a pool of reusable player instances per model.
+    
+    Each model gets `per_model_concurrent` player instances stored in an asyncio.Queue.
+    Players are created with team=None (set later via prepare_for_battle()).
+    
+    Returns dict mapping model name -> Queue of player instances.
+    """
+    pools = {}
+    max_name = 18 - 3  # room for "-{i}" suffix (e.g., "-0", "-1")
+    
+    for model_name, model_config in models_by_name.items():
+        pool = asyncio.Queue()
+        
+        for i in range(per_model_concurrent):
+            # Truncate and strip trailing punctuation that confuses showdown
+            base_name = model_name[:max_name].rstrip(".-_")
+            username = f"{base_name}-{i}"
+            
+            if use_mock:
+                player = MockPlayer(
+                    account_configuration=AccountConfiguration(username, None),
+                    battle_format=BATTLE_FORMAT,
+                    team=None,
+                    server_configuration=CUSTOM_SERVER_CONFIG,
+                    error_rate=mock_error_rate,
+                )
+            else:
+                player = LLMPlayer(
+                    account_configuration=AccountConfiguration(username, None),
+                    model=model_config.model,
+                    temperature=model_config.temperature,
+                    max_tokens=model_config.max_tokens,
+                    timeout=model_config.timeout,
+                    battle_format=BATTLE_FORMAT,
+                    team=None,
+                    server_configuration=CUSTOM_SERVER_CONFIG,
+                )
+            
+            pool.put_nowait(player)
+        
+        pools[model_name] = pool
+    
+    return pools
+
+
 async def run_match(
     match: dict,
     models_by_name: dict[str, ModelConfig],
     team_pool,
     match_dir: Path,
-    use_mock: bool = False,
-    mock_error_rate: float = 0.0,
+    player_a,
+    player_b,
 ) -> dict:
     """
-    Run a single match and return updated match dict.
+    Run a single match using pre-created players and return updated match dict.
+    
+    Players are prepared for this match via prepare_for_battle() before calling.
+    Winner is determined via battle.won/battle.lost BEFORE reset_battles().
     """
     model_a = models_by_name[match["model_a"]]
     model_b = models_by_name[match["model_b"]]
-    
-    # Username format: truncate model name to fit -A/-B suffix within 18 chars
-    max_name = 18 - 2  # room for "-A" / "-B"
-    username_a = f"{model_a.name[:max_name]}-A"
-    username_b = f"{model_b.name[:max_name]}-B"
-    
-    # Player ID = username (makes JSONL files named {username}.jsonl)
-    player_id_a = username_a
-    player_id_b = username_b
     
     # Create per-match logger
     logger = MatchLogger(match_dir=str(match_dir), enabled=True)
@@ -316,75 +290,34 @@ async def run_match(
     team_a = team_pool.teams[team_a_idx]
     team_b = team_pool.teams[team_b_idx]
     
-    # Create players
-    if use_mock:
-        player_a = MockPlayer(
-            account_configuration=AccountConfiguration(username_a, None),
-            battle_format=BATTLE_FORMAT,
-            team=team_a,
-            server_configuration=CUSTOM_SERVER_CONFIG,
-            battle_logger=logger,
-            team_name=match["team_a"],
-            player_id=player_id_a,
-            error_rate=mock_error_rate,
-        )
-        player_b = MockPlayer(
-            account_configuration=AccountConfiguration(username_b, None),
-            battle_format=BATTLE_FORMAT,
-            team=team_b,
-            server_configuration=CUSTOM_SERVER_CONFIG,
-            battle_logger=logger,
-            team_name=match["team_b"],
-            player_id=player_id_b,
-            error_rate=mock_error_rate,
-        )
-    else:
-        player_a = LLMPlayer(
-            account_configuration=AccountConfiguration(username_a, None),
-            model=model_a.model,
-            temperature=model_a.temperature,
-            max_tokens=model_a.max_tokens,
-            timeout=model_a.timeout,
-            battle_format=BATTLE_FORMAT,
-            team=team_a,
-            server_configuration=CUSTOM_SERVER_CONFIG,
-            battle_logger=logger,
-            team_name=match["team_a"],
-            player_id=player_id_a,
-        )
-        player_b = LLMPlayer(
-            account_configuration=AccountConfiguration(username_b, None),
-            model=model_b.model,
-            temperature=model_b.temperature,
-            max_tokens=model_b.max_tokens,
-            timeout=model_b.timeout,
-            battle_format=BATTLE_FORMAT,
-            team=team_b,
-            server_configuration=CUSTOM_SERVER_CONFIG,
-            battle_logger=logger,
-            team_name=match["team_b"],
-            player_id=player_id_b,
-        )
+    # Prepare players for this match
+    player_a.prepare_for_battle(team_a, match["team_a"], logger)
+    player_b.prepare_for_battle(team_b, match["team_b"], logger)
     
-    # Register opponents
-    player_a.register_opponent(username_b, model_b.model, player_id=player_id_b)
-    player_b.register_opponent(username_a, model_a.model, player_id=player_id_a)
+    # Clear and re-register opponents (players face different opponents each match)
+    player_a.clear_opponent_registry()
+    player_b.clear_opponent_registry()
+    player_a.register_opponent(player_b.username, model_b.model, player_id=player_b.player_id)
+    player_b.register_opponent(player_a.username, model_a.model, player_id=player_a.player_id)
     
     # Run battle
     await player_a.battle_against(player_b, n_battles=1)
     
-    # Get battle tag from player for debugging reference
+    # Get battle tag and determine winner BEFORE reset_battles()
     battle_tag = None
+    winner = None
+    
     if player_a.battles:
         battle_tag = list(player_a.battles.keys())[0]
+        battle = player_a.battles[battle_tag]
+        if battle.won:
+            winner = model_a.name
+        elif battle.lost:
+            winner = model_b.name
     
-    # Determine winner
-    if player_a.n_won_battles > 0:
-        winner = model_a.name
-    elif player_b.n_won_battles > 0:
-        winner = model_b.name
-    else:
-        winner = None
+    # Reset battles for reuse (clears battle history)
+    player_a.reset_battles()
+    player_b.reset_battles()
     
     return {
         **match,
@@ -436,6 +369,11 @@ async def run_tournament(
     
     # Load teams
     team_pool = get_team_pool("Raw-Teams")
+    
+    # Create player pools (reusable player instances per model)
+    player_pools = create_player_pools(
+        models_by_name, per_model_concurrent, use_mock, mock_error_rate
+    )
     
     # Reset any 'running' matches to 'pending' (crash recovery)
     for match in manifest["matches"]:
@@ -519,6 +457,10 @@ async def run_tournament(
         match_desc = f"#{match['id']}: {model_a} vs {model_b}"
         print(f"[START] {match_desc}")
         
+        # Acquire players from pools
+        player_a = await player_pools[model_a].get()
+        player_b = await player_pools[model_b].get()
+        
         # Mark as running
         async with manifest_lock:
             for m in manifest["matches"]:
@@ -534,7 +476,7 @@ async def run_tournament(
             
             result = await run_match(
                 match, models_by_name, team_pool, match_dir,
-                use_mock=use_mock, mock_error_rate=mock_error_rate
+                player_a, player_b
             )
             
             async with manifest_lock:
@@ -557,7 +499,21 @@ async def run_tournament(
             
             print(f"[FAIL]  {match_desc}: {e}")
             
+            # Try to reset battles before returning to pool
+            try:
+                player_a.reset_battles()
+            except Exception:
+                pass
+            try:
+                player_b.reset_battles()
+            except Exception:
+                pass
+            
         finally:
+            # Return players to their pools
+            player_pools[model_a].put_nowait(player_a)
+            player_pools[model_b].put_nowait(player_b)
+            
             # Update load tracking
             current_load[model_a] -= 1
             current_load[model_b] -= 1

@@ -48,6 +48,27 @@ class AgentPlayer(Player):
         if player_id:
             self.known_opponent_ids[username] = player_id
 
+    def prepare_for_battle(self, team: str, team_name: str, battle_logger: Optional["BattleLogger"] = None) -> None:
+        """
+        Prepare this player for a new battle (used by player pools).
+        
+        Sets the team, team name, and optionally the battle logger for the upcoming match.
+        Called before each match when reusing players from a pool.
+        """
+        self.update_team(team)
+        self.team_name = team_name
+        if battle_logger is not None:
+            self.battle_logger = battle_logger
+
+    def clear_opponent_registry(self) -> None:
+        """
+        Clear the opponent registry (used by player pools).
+        
+        Needed because pool players face different opponents each match.
+        """
+        self.known_opponents.clear()
+        self.known_opponent_ids.clear()
+
     async def choose_move(self, battle: AbstractBattle) -> str:
         """
         Main choice loop.
