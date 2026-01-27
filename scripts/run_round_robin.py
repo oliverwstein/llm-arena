@@ -12,13 +12,13 @@ Examples:
   python3 scripts/run_round_robin.py generate --models Grok-4 DeepSeek-Reasoner Gemini-3-Flash GPT-5-Mini --games-per-pair 3
 
   # Run the tournament (resumable)
-  python3 scripts/run_round_robin.py run --manifest tournament.json --concurrent 6 --per-model-concurrent 3
+  python3 scripts/run_round_robin.py run --manifest logs/{tournament-name}/manifest.json --concurrent 6 --per-model-concurrent 3
 
   # Check status
-  python3 scripts/run_round_robin.py status --manifest tournament.json
+  python3 scripts/run_round_robin.py status --manifest logs/{tournament-name}/manifest.json
 
   # Run with mock players (for testing)
-  python3 scripts/run_round_robin.py run --manifest tournament.json --mock
+  python3 scripts/run_round_robin.py run --manifest logs/{tournament-name}/manifest.json --mock
 """
 
 import asyncio
@@ -26,9 +26,9 @@ import argparse
 import itertools
 import json
 import os
+import random
 import signal
 import sys
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -49,17 +49,80 @@ load_env_file()
 BATTLE_FORMAT = "gen4ou"
 
 
+class MatchLogger(BattleLogger):
+    """
+    BattleLogger subclass that writes files flat into a match directory.
+    One instance per match, pointed at match-XXXX/.
+    """
+
+    def __init__(self, match_dir: str, enabled: bool = True):
+        self.enabled = enabled
+        self.log_dir = Path(match_dir)
+        self.battles_dir = self.log_dir  # Not used, but required by parent
+        self._battle_state: dict[str, dict] = {}
+
+        if self.enabled:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+
+    def _battle_dir(self, battle_id: str) -> Path:
+        """Write all files directly to log_dir (the match directory)."""
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        return self.log_dir
+
+    def log_action(
+        self,
+        battle_id: str,
+        player_id: str,
+        turn: int,
+        observation: str,
+        state: str,
+        raw_response: str,
+        tool_calls: list[dict],
+        parsed: dict,
+        tokens: dict,
+        latency_ms: int,
+        confidence: str = "",
+    ) -> None:
+        """Append action and update metadata with current_turn."""
+        super().log_action(
+            battle_id, player_id, turn, observation, state,
+            raw_response, tool_calls, parsed, tokens, latency_ms, confidence
+        )
+
+        if not self.enabled:
+            return
+
+        # Update metadata with current turn for live tracking
+        meta_path = self.log_dir / "metadata.json"
+        if meta_path.exists():
+            try:
+                with open(meta_path) as f:
+                    metadata = json.load(f)
+                metadata["current_turn"] = turn
+                with open(meta_path, "w") as f:
+                    json.dump(metadata, f, indent=2)
+            except Exception:
+                pass
+
+
 def generate_manifest(
     models: list[ModelConfig],
     games_per_pair: int,
     team_pool,
-    output_path: str,
+    log_dir: str = "logs",
     tournament_name: Optional[str] = None,
-) -> dict:
-    """Generate a tournament manifest with all matches."""
+) -> tuple[dict, str]:
+    """Generate a tournament manifest with all matches.
+    
+    Returns (manifest, manifest_path).
+    """
     
     if tournament_name is None:
         tournament_name = f"round-robin-{datetime.now().strftime('%Y-%m-%d-%H%M')}"
+    
+    # Create tournament directory
+    tournament_dir = Path(log_dir) / tournament_name
+    tournament_dir.mkdir(parents=True, exist_ok=True)
     
     # Generate all pairings
     pairs = list(itertools.combinations(models, 2))
@@ -93,6 +156,11 @@ def generate_manifest(
             model_team_idx[model_a.name] += 1
             model_team_idx[model_b.name] += 1
             
+            # Create match directory
+            match_dir_name = f"match-{match_id:04d}"
+            match_dir = tournament_dir / match_dir_name
+            match_dir.mkdir(parents=True, exist_ok=True)
+            
             matches.append({
                 "id": match_id,
                 "model_a": model_a.name,
@@ -100,11 +168,10 @@ def generate_manifest(
                 "team_a": team_a_name,
                 "team_b": team_b_name,
                 "status": "pending",
-                "result": None,
                 "winner": None,
                 "error": None,
                 "attempts": 0,
-                "battle_id": None,
+                "battle_tag": None,
             })
     
     manifest = {
@@ -118,10 +185,11 @@ def generate_manifest(
         "matches": matches,
     }
     
-    # Write atomically
-    write_manifest(manifest, output_path)
+    # Write manifest inside tournament directory
+    manifest_path = str(tournament_dir / "manifest.json")
+    write_manifest(manifest, manifest_path)
     
-    return manifest
+    return manifest, manifest_path
 
 
 def write_manifest(manifest: dict, path: str) -> None:
@@ -142,7 +210,7 @@ async def run_match(
     match: dict,
     models_by_name: dict[str, ModelConfig],
     team_pool,
-    logger: BattleLogger,
+    match_dir: Path,
     use_mock: bool = False,
     mock_error_rate: float = 0.0,
 ) -> dict:
@@ -152,16 +220,17 @@ async def run_match(
     model_a = models_by_name[match["model_a"]]
     model_b = models_by_name[match["model_b"]]
     
-    # Generate unique identifiers
-    session_id = str(uuid.uuid4())[:8]
-    username_a = f"{model_a.name}-{session_id}"[:18]
-    username_b = f"{model_b.name}-{session_id}"[:18]
+    # Username format: truncate model name to fit -A/-B suffix within 18 chars
+    max_name = 18 - 2  # room for "-A" / "-B"
+    username_a = f"{model_a.name[:max_name]}-A"
+    username_b = f"{model_b.name[:max_name]}-B"
     
-    if username_a == username_b:
-        username_b = username_b[:-1] + "2"
+    # Player ID = username (makes JSONL files named {username}.jsonl)
+    player_id_a = username_a
+    player_id_b = username_b
     
-    player_id_a = f"{model_a.model}-{uuid.uuid4().hex[:8]}"
-    player_id_b = f"{model_b.model}-{uuid.uuid4().hex[:8]}"
+    # Create per-match logger
+    logger = MatchLogger(match_dir=str(match_dir), enabled=True)
     
     # Get teams
     team_a_idx = team_pool.team_names.index(match["team_a"])
@@ -226,23 +295,24 @@ async def run_match(
     # Run battle
     await player_a.battle_against(player_b, n_battles=1)
     
+    # Get battle tag from player for debugging reference
+    battle_tag = None
+    if player_a.battles:
+        battle_tag = list(player_a.battles.keys())[0]
+    
     # Determine winner
     if player_a.n_won_battles > 0:
         winner = model_a.name
-        result = f"{model_a.name} wins"
     elif player_b.n_won_battles > 0:
         winner = model_b.name
-        result = f"{model_b.name} wins"
     else:
         winner = None
-        result = "draw"
     
     return {
         **match,
         "status": "completed",
-        "result": result,
         "winner": winner,
-        "battle_id": f"{session_id}",
+        "battle_tag": battle_tag,
     }
 
 
@@ -283,13 +353,11 @@ async def run_tournament(
                 print(f"Error: No API key for {name} ({model.model})")
                 return
     
+    # Derive tournament directory from manifest path
+    tournament_dir = Path(manifest_path).parent
+    
     # Load teams
     team_pool = get_team_pool("Raw-Teams")
-    
-    # Create logger
-    log_dir = Path("logs/tournament")
-    log_dir.mkdir(parents=True, exist_ok=True)
-    logger = BattleLogger(log_dir=str(log_dir), enabled=True)
     
     # Reset any 'running' matches to 'pending' (crash recovery)
     for match in manifest["matches"]:
@@ -359,7 +427,6 @@ async def run_tournament(
             candidates_with_scores.append((score, match))
         
         # Sort by score (asc), then randomize for tie-breaking
-        import random
         random.shuffle(candidates_with_scores)
         candidates_with_scores.sort(key=lambda x: x[0])
         
@@ -384,8 +451,11 @@ async def run_tournament(
             write_manifest(manifest, manifest_path)
 
         try:
+            # Compute match directory path
+            match_dir = tournament_dir / f"match-{match['id']:04d}"
+            
             result = await run_match(
-                match, models_by_name, team_pool, logger,
+                match, models_by_name, team_pool, match_dir,
                 use_mock=use_mock, mock_error_rate=mock_error_rate
             )
             
@@ -551,17 +621,19 @@ def cmd_generate(args):
     # Load team pool
     team_pool = get_team_pool(args.teams_dir)
     
-    # Check if output exists
-    if Path(args.output).exists() and not args.force:
-        print(f"\nError: {args.output} already exists. Use --force to overwrite.")
+    # Check if tournament directory already exists
+    tournament_name = args.name or f"round-robin-{datetime.now().strftime('%Y-%m-%d-%H%M')}"
+    tournament_dir = Path(args.log_dir) / tournament_name
+    if tournament_dir.exists() and not args.force:
+        print(f"\nError: {tournament_dir} already exists. Use --force to overwrite.")
         sys.exit(1)
     
     # Generate manifest
-    manifest = generate_manifest(
+    manifest, manifest_path = generate_manifest(
         models=valid_models,
         games_per_pair=args.games_per_pair,
         team_pool=team_pool,
-        output_path=args.output,
+        log_dir=args.log_dir,
         tournament_name=args.name,
     )
     
@@ -572,7 +644,7 @@ def cmd_generate(args):
     print(f"  Models: {n_models}")
     print(f"  Games per pair: {args.games_per_pair}")
     print(f"  Total matches: {n_matches}")
-    print(f"  Output: {args.output}")
+    print(f"  Manifest: {manifest_path}")
 
 
 def cmd_run(args):
@@ -615,15 +687,15 @@ def main():
                            help="Model names to include")
     gen_parser.add_argument("--games-per-pair", type=int, default=3,
                            help="Number of games per model pair (default: 3)")
-    gen_parser.add_argument("--output", "-o", default="tournament.json",
-                           help="Output manifest path (default: tournament.json)")
+    gen_parser.add_argument("--log-dir", default="logs",
+                           help="Base log directory (default: logs)")
     gen_parser.add_argument("--name", help="Tournament name (default: auto-generated)")
     gen_parser.add_argument("--models-config", default="config/models.yaml",
                            help="Path to models YAML config")
     gen_parser.add_argument("--teams-dir", default="Raw-Teams",
                            help="Directory containing team files")
     gen_parser.add_argument("--force", "-f", action="store_true",
-                           help="Overwrite existing manifest")
+                           help="Overwrite existing tournament directory")
     gen_parser.set_defaults(func=cmd_generate)
     
     # run subcommand
