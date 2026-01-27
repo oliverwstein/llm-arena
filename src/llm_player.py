@@ -89,8 +89,8 @@ class LLMPlayer(AgentPlayer):
         self,
         model: str,
         temperature: float = 0.7,
-        max_tokens: int = 4096,
-        timeout: float = 30.0,
+        max_tokens: int = 16384,
+        timeout: float = 180.0,
         system_prompt: str = SYSTEM_PROMPT,
         verbose: bool = False,
         max_tool_calls: int = 20,
@@ -262,7 +262,7 @@ class LLMPlayer(AgentPlayer):
                 if retry_count > 15:
                     raise
                 wait = min(10 * (2 ** retry_count) + random.uniform(0, 5), 300)
-                print(f"[{self.username}] Rate limited. Retry {retry_count}/15 in {wait:.0f}s")
+                print(f"[{self.username}] Rate limited: {e}. Retry {retry_count}/15 in {wait:.0f}s")
                 await asyncio.sleep(wait)
                 continue
 
@@ -270,7 +270,7 @@ class LLMPlayer(AgentPlayer):
                 retry_count += 1
                 if retry_count > 2:
                     raise
-                print(f"[{self.username}] Timeout. Retry {retry_count}/2...")
+                print(f"[{self.username}] Timeout: {e}. Retry {retry_count}/2...")
                 continue
 
             except (litellm.APIConnectionError, litellm.ServiceUnavailableError) as e:
@@ -278,7 +278,7 @@ class LLMPlayer(AgentPlayer):
                 if retry_count > 3:
                     raise
                 wait = 15 * retry_count
-                print(f"[{self.username}] Connection error. Retry {retry_count}/3 in {wait}s")
+                print(f"[{self.username}] Connection error: {e}. Retry {retry_count}/3 in {wait}s")
                 await asyncio.sleep(wait)
                 continue
 

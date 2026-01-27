@@ -11,8 +11,8 @@ class ModelConfig:
     name: str           # Display name
     model: str          # LiteLLM model ID
     temperature: float = 0.7
-    max_tokens: int = 4096
-    timeout: float = 60.0
+    max_tokens: int = 16384
+    timeout: float = 180.0
     team: Optional[str] = None    # Specific team path (optional)
     force_fallback: bool = False  # Force use of fallback bot
     api_price_input: float = 0.0  # Price per 1M input tokens
@@ -30,8 +30,8 @@ def load_models_from_yaml(path: str) -> list[ModelConfig]:
             name=m["name"],
             model=m["model"],
             temperature=m.get("temperature", 0.7),
-            max_tokens=m.get("max_tokens", 4096),
-            timeout=m.get("timeout", 60.0),
+            max_tokens=m.get("max_tokens", 16384),
+            timeout=m.get("timeout", 180.0),
             team=m.get("team"),
             force_fallback=m.get("force_fallback", False),
             api_price_input=float(m.get("api_price_input", 0.0)),

@@ -49,3 +49,4 @@ technical-machine/
 # Logs
 *.log
 logs/
+tournament.json

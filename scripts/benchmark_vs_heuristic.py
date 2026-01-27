@@ -58,7 +58,7 @@ async def benchmark_model(
 
     # Create unique usernames for this session
     session_id = str(uuid.uuid4())[:8]
-    llm_username = f"L-{session_id}-{model_config.name}"[:18]  # Limit length for Showdown
+    llm_username = f"L-{model_config.name}-{session_id}"[:18]  # Limit length for Showdown
     heuristic_username = f"Heuristic-{session_id}"
 
     # Determine team for LLM

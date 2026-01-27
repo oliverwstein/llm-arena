@@ -9,22 +9,16 @@ Three subcommands:
 
 Examples:
   # Generate a tournament manifest
-  python scripts/run_round_robin.py generate \\
-    --models Claude-Haiku-4.5 GPT-5-Mini Gemini-3-Flash \\
-    --games-per-pair 3 \\
-    --output tournament.json
+  python3 scripts/run_round_robin.py generate --models Grok-4 DeepSeek-Reasoner Gemini-3-Flash GPT-5-Mini --games-per-pair 3
 
   # Run the tournament (resumable)
-  python scripts/run_round_robin.py run \\
-    --manifest tournament.json \\
-    --concurrent 6 \\
-    --per-model-concurrent 3
+  python3 scripts/run_round_robin.py run --manifest tournament.json --concurrent 6 --per-model-concurrent 3
 
   # Check status
-  python scripts/run_round_robin.py status --manifest tournament.json
+  python3 scripts/run_round_robin.py status --manifest tournament.json
 
   # Run with mock players (for testing)
-  python scripts/run_round_robin.py run --manifest tournament.json --mock
+  python3 scripts/run_round_robin.py run --manifest tournament.json --mock
 """
 
 import asyncio
@@ -81,13 +75,14 @@ def generate_manifest(
     for model_a, model_b in pairs:
         for game_num in range(games_per_pair):
             match_id += 1
-            
-            # Assign teams with rotation
-            # Each model gets a different team each game (when possible)
+
+            # Team rotation: each model advances through teams across all its matches.
+            # When both models land on the same team (counters are equal mod num_teams),
+            # shift model_b by 1 for this match only — model_b's counter still advances
+            # normally, so its rotation stays clean for future matches.
             team_a_idx = model_team_idx[model_a.name] % num_teams
             team_b_idx = model_team_idx[model_b.name] % num_teams
-            
-            # Ensure teams are different for this match
+
             if team_a_idx == team_b_idx:
                 team_b_idx = (team_b_idx + 1) % num_teams
             
@@ -159,8 +154,8 @@ async def run_match(
     
     # Generate unique identifiers
     session_id = str(uuid.uuid4())[:8]
-    username_a = f"R-{session_id}-{model_a.name}"[:18]
-    username_b = f"R-{session_id}-{model_b.name}"[:18]
+    username_a = f"{model_a.name}-{session_id}"[:18]
+    username_b = f"{model_b.name}-{session_id}"[:18]
     
     if username_a == username_b:
         username_b = username_b[:-1] + "2"
@@ -258,15 +253,16 @@ async def run_tournament(
     use_mock: bool = False,
     mock_error_rate: float = 0.0,
     max_retries: int = 3,
+    models_config: str = "config/models.yaml",
 ) -> None:
     """
-    Run tournament from manifest with concurrency controls.
+    Run tournament from manifest with dynamic load balancing.
     """
     manifest = load_manifest(manifest_path)
-    
+
     # Load models
     try:
-        all_models = load_models_from_yaml("config/models.yaml")
+        all_models = load_models_from_yaml(models_config)
     except Exception as e:
         print(f"Error loading models.yaml: {e}")
         return
@@ -320,11 +316,9 @@ async def run_tournament(
         print(f"Mode: MOCK (error_rate={mock_error_rate})")
     print(f"{'='*60}\n")
     
-    # Setup semaphores
-    global_sem = asyncio.Semaphore(concurrent)
-    model_sems = {name: asyncio.Semaphore(per_model_concurrent) for name in models_by_name}
-    
-    # Shared state for manifest updates
+    # --- Dynamic Scheduler State ---
+    active_tasks = set()
+    current_load = {name: 0 for name in models_by_name}
     manifest_lock = asyncio.Lock()
     shutdown_requested = False
     
@@ -334,65 +328,128 @@ async def run_tournament(
         shutdown_requested = True
     
     signal.signal(signal.SIGINT, handle_sigint)
-    
-    async def run_with_semaphores(match: dict) -> None:
+
+    def get_best_match(candidates: list[dict], load: dict[str, int]) -> Optional[dict]:
+        """
+        Select the match that minimizes the maximum load on any single model.
+        Returns None if no match can be scheduled within limits.
+        """
+        best_match = None
+        min_max_load = float('inf')
+        
+        # We only consider matches where BOTH models are under the limit
+        valid_candidates = []
+        for match in candidates:
+            a, b = match["model_a"], match["model_b"]
+            if load[a] < per_model_concurrent and load[b] < per_model_concurrent:
+                valid_candidates.append(match)
+        
+        if not valid_candidates:
+            return None
+            
+        # Optimization: Sort by sum of loads (prefer busier models if under limit? 
+        # Actually we want to balance load, so we prefer models with LOWER current load)
+        # Strategy: Pick match where max(load_a, load_b) is minimized.
+        
+        candidates_with_scores = []
+        for match in valid_candidates:
+            a, b = match["model_a"], match["model_b"]
+            # Projected load if we pick this match
+            score = max(load[a], load[b])
+            candidates_with_scores.append((score, match))
+        
+        # Sort by score (asc), then randomize for tie-breaking
+        import random
+        random.shuffle(candidates_with_scores)
+        candidates_with_scores.sort(key=lambda x: x[0])
+        
+        return candidates_with_scores[0][1]
+
+    async def worker(match: dict):
         nonlocal manifest
         
-        if shutdown_requested:
-            return
+        model_a = match["model_a"]
+        model_b = match["model_b"]
         
-        # Sorted lock acquisition to prevent deadlocks
-        model_names = sorted([match["model_a"], match["model_b"]])
-        sem_1 = model_sems[model_names[0]]
-        sem_2 = model_sems[model_names[1]]
+        match_desc = f"#{match['id']}: {model_a} vs {model_b}"
+        print(f"[START] {match_desc}")
         
-        async with global_sem:
-            async with sem_1:
-                async with sem_2:
-                    if shutdown_requested:
-                        return
-                    
-                    # Mark as running
-                    async with manifest_lock:
-                        for m in manifest["matches"]:
-                            if m["id"] == match["id"]:
-                                m["status"] = "running"
-                                m["attempts"] += 1
-                                break
-                        write_manifest(manifest, manifest_path)
-                    
-                    match_desc = f"#{match['id']}: {match['model_a']} vs {match['model_b']}"
-                    print(f"[START] {match_desc}")
-                    
-                    try:
-                        result = await run_match(
-                            match, models_by_name, team_pool, logger,
-                            use_mock=use_mock, mock_error_rate=mock_error_rate
-                        )
-                        
-                        async with manifest_lock:
-                            for i, m in enumerate(manifest["matches"]):
-                                if m["id"] == match["id"]:
-                                    manifest["matches"][i] = result
-                                    break
-                            write_manifest(manifest, manifest_path)
-                        
-                        print(f"[DONE]  {match_desc} -> {result['winner'] or 'draw'}")
-                        
-                    except Exception as e:
-                        async with manifest_lock:
-                            for m in manifest["matches"]:
-                                if m["id"] == match["id"]:
-                                    m["status"] = "failed"
-                                    m["error"] = str(e)[:200]
-                                    break
-                            write_manifest(manifest, manifest_path)
-                        
-                        print(f"[FAIL]  {match_desc}: {e}")
-    
-    # Run all matches
-    tasks = [run_with_semaphores(m) for m in pending_matches]
-    await asyncio.gather(*tasks, return_exceptions=True)
+        # Mark as running
+        async with manifest_lock:
+            for m in manifest["matches"]:
+                if m["id"] == match["id"]:
+                    m["status"] = "running"
+                    m["attempts"] += 1
+                    break
+            write_manifest(manifest, manifest_path)
+
+        try:
+            result = await run_match(
+                match, models_by_name, team_pool, logger,
+                use_mock=use_mock, mock_error_rate=mock_error_rate
+            )
+            
+            async with manifest_lock:
+                for i, m in enumerate(manifest["matches"]):
+                    if m["id"] == match["id"]:
+                        manifest["matches"][i] = result
+                        break
+                write_manifest(manifest, manifest_path)
+            
+            print(f"[DONE]  {match_desc} -> {result['winner'] or 'draw'}")
+            
+        except Exception as e:
+            async with manifest_lock:
+                for m in manifest["matches"]:
+                    if m["id"] == match["id"]:
+                        m["status"] = "failed"
+                        m["error"] = str(e)[:200]
+                        break
+                write_manifest(manifest, manifest_path)
+            
+            print(f"[FAIL]  {match_desc}: {e}")
+            
+        finally:
+            # Update load tracking
+            current_load[model_a] -= 1
+            current_load[model_b] -= 1
+
+    # Main Supervisor Loop
+    while (pending_matches or active_tasks) and not shutdown_requested:
+        # Spawn new tasks if slots are available
+        while len(active_tasks) < concurrent and pending_matches:
+            match = get_best_match(pending_matches, current_load)
+            
+            if match:
+                pending_matches.remove(match)
+                
+                # Update load immediately
+                current_load[match["model_a"]] += 1
+                current_load[match["model_b"]] += 1
+                
+                task = asyncio.create_task(worker(match))
+                active_tasks.add(task)
+                task.add_done_callback(active_tasks.discard)
+            else:
+                # No valid match found (all pending blocked by per-model limits)
+                break
+        
+        if not active_tasks and not pending_matches:
+            break
+            
+        # Wait for at least one task to finish before checking again
+        # OR wait a short interval to check for shutdown
+        if active_tasks:
+            done, pending = await asyncio.wait(
+                active_tasks, 
+                return_when=asyncio.FIRST_COMPLETED,
+                timeout=1.0
+            )
+            
+    # Wait for remaining tasks if shutting down
+    if active_tasks:
+        print(f"\nWaiting for {len(active_tasks)} active matches to finish...")
+        await asyncio.gather(*active_tasks, return_exceptions=True)
     
     # Print summary
     manifest = load_manifest(manifest_path)
@@ -531,6 +588,7 @@ def cmd_run(args):
         use_mock=args.mock,
         mock_error_rate=args.error_rate,
         max_retries=args.max_retries,
+        models_config=args.models_config,
     ))
 
 
@@ -582,6 +640,8 @@ def main():
                            help="Mock error injection rate (0-1, default: 0)")
     run_parser.add_argument("--max-retries", type=int, default=3,
                            help="Max retries for failed matches (default: 3)")
+    run_parser.add_argument("--models-config", default="config/models.yaml",
+                           help="Path to models YAML config")
     run_parser.set_defaults(func=cmd_run)
     
     # status subcommand

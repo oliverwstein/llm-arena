@@ -64,8 +64,8 @@ class PlayerFactory:
         name: str,
         model: str,
         temperature: float = 0.7,
-        max_tokens: int = 4096,
-        timeout: float = 60.0,
+        max_tokens: int = 16384,
+        timeout: float = 180.0,
         force_fallback: bool = False,
         team_path: Optional[str] = None,
         **kwargs

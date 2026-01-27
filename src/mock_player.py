@@ -4,6 +4,8 @@ import random
 import time
 from typing import Optional, TYPE_CHECKING
 
+import litellm
+
 from .agent_player import AgentPlayer
 
 if TYPE_CHECKING:
@@ -63,24 +65,33 @@ class MockPlayer(AgentPlayer):
         # Maybe inject an error
         if self.error_rate > 0 and random.random() < self.error_rate:
             error_type = random.choice(self.error_types)
-            latency_ms = int((time.time() - start_time) * 1000)
-            
+
             if error_type == "context_window":
-                # Context window errors should propagate up
-                raise Exception("Context window exceeded (mock)")
-            
-            # Other errors return empty action (triggers fallback)
-            return {
-                "action": "",
-                "reasoning": f"Mock error: {error_type}",
-                "prediction": "",
-                "confidence": "",
-                "raw_response": f"ERROR: Mock {error_type} error injected",
-                "tool_calls": [],
-                "tokens": {"input": 0, "output": 0, "reasoning": 0},
-                "latency_ms": latency_ms,
-                "fallback_reason": error_type,
-            }
+                raise litellm.ContextWindowExceededError(
+                    message="Context window exceeded (mock)",
+                    model="mock-player",
+                    llm_provider="mock",
+                )
+            elif error_type == "timeout":
+                raise litellm.Timeout(
+                    message="Request timed out (mock)",
+                    model="mock-player",
+                    llm_provider="mock",
+                )
+            elif error_type == "rate_limit":
+                raise litellm.RateLimitError(
+                    message="Rate limit exceeded (mock)",
+                    model="mock-player",
+                    llm_provider="mock",
+                )
+            elif error_type == "connection":
+                raise litellm.APIConnectionError(
+                    message="Connection failed (mock)",
+                    model="mock-player",
+                    llm_provider="mock",
+                )
+            else:
+                raise Exception(f"Mock error: {error_type}")
         
         # Make a random choice
         if battle.available_moves:
