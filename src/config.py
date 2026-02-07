@@ -17,6 +17,7 @@ class ModelConfig:
     force_fallback: bool = False  # Force use of fallback bot
     api_price_input: float = 0.0  # Price per 1M input tokens
     api_price_output: float = 0.0  # Price per 1M output tokens
+    reasoning_effort: Optional[str] = None  # For reasoning models: "low", "medium", "high"
 
 
 def load_models_from_yaml(path: str) -> list[ModelConfig]:
@@ -36,6 +37,7 @@ def load_models_from_yaml(path: str) -> list[ModelConfig]:
             force_fallback=m.get("force_fallback", False),
             api_price_input=float(m.get("api_price_input", 0.0)),
             api_price_output=float(m.get("api_price_output", 0.0)),
+            reasoning_effort=m.get("reasoning_effort"),
         ))
     return models
 

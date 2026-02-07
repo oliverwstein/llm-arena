@@ -172,24 +172,54 @@ class AgentPlayer(Player):
 
             return random_order
 
-        # 8. Parse and validate the action
-        parsed = self._parse_action(action_string, battle)
-        if parsed is None:
-            # Invalid action from LLM - use fallback
-            random_order, random_action_desc = self._choose_random_move_with_description(battle)
-            if self.battle_logger:
-                self.battle_logger.log_fallback(
-                    battle_id=battle_id,
-                    player_id=self.player_id,
-                    turn=battle.turn,
-                    reason=f"invalid_action: {action_string}",
-                    random_action=random_action_desc
+        # 8. Parse and validate the action with retry loop
+        max_correction_attempts = 2
+        current_action = action_string
+        
+        for attempt in range(max_correction_attempts + 1):
+            parsed = self._parse_action(current_action, battle)
+            
+            if parsed is not None:
+                # Valid action found
+                return self.create_order(parsed)
+            
+            # Invalid action - try to get correction if not at max attempts
+            if attempt < max_correction_attempts:
+                valid_actions = self._format_valid_actions(battle)
+                
+                if self.verbose:
+                    print(f"[{self.username}] Invalid action '{current_action}', requesting correction (attempt {attempt + 1}/{max_correction_attempts})")
+                
+                # Request correction from LLM (subclasses implement this)
+                correction_result = await self._request_action_correction(
+                    turn_context,
+                    invalid_action=current_action,
+                    valid_actions=valid_actions
                 )
-            if self.verbose:
-                print(f"[{self.username}] FALLBACK (invalid action '{action_string}'): {random_action_desc}")
-            return random_order
-
-        return self.create_order(parsed)
+                
+                if correction_result and correction_result.get("action"):
+                    current_action = correction_result["action"]
+                    # Update reasoning/prediction if provided
+                    if correction_result.get("reasoning"):
+                        reasoning = correction_result["reasoning"]
+                    continue
+                else:
+                    # Correction failed, break to fallback
+                    break
+        
+        # All attempts failed - use fallback
+        random_order, random_action_desc = self._choose_random_move_with_description(battle)
+        if self.battle_logger:
+            self.battle_logger.log_fallback(
+                battle_id=battle_id,
+                player_id=self.player_id,
+                turn=battle.turn,
+                reason=f"invalid_action_after_{max_correction_attempts}_retries: {action_string}",
+                random_action=random_action_desc
+            )
+        if self.verbose:
+            print(f"[{self.username}] FALLBACK (invalid action '{action_string}' after {max_correction_attempts} retries): {random_action_desc}")
+        return random_order
 
     async def _make_decision(self, context: dict) -> dict:
         """
@@ -206,6 +236,29 @@ class AgentPlayer(Player):
         """
         from .response_parser import parse_llm_response
         return parse_llm_response(action_str, battle)
+
+    async def _request_action_correction(
+        self,
+        context: dict,
+        invalid_action: str,
+        valid_actions: str
+    ) -> dict:
+        """
+        Request a corrected action from the decision maker.
+        
+        Called when the initial action couldn't be parsed.
+        Subclasses (like LLMPlayer) can override to call the LLM again.
+        
+        Args:
+            context: The turn context dict
+            invalid_action: The action string that failed to parse
+            valid_actions: Formatted string of valid actions
+            
+        Returns:
+            Dict with 'action' key, or None/empty dict if correction failed.
+        """
+        # Default implementation: no correction capability
+        return {}
 
     def _ensure_battle_state(self, battle: AbstractBattle):
         """Initialize per-battle structures."""
@@ -282,6 +335,32 @@ class AgentPlayer(Player):
             if goal.get("notes"):
                 lines.append(f"   - {goal['notes']}")
         return "\n".join(lines) if lines else ""
+
+    def _format_valid_actions(self, battle: AbstractBattle) -> str:
+        """Format available moves and switches as a readable list for LLM correction."""
+        lines = []
+        
+        if battle.available_moves:
+            move_strs = []
+            for move in battle.available_moves:
+                # Include PP info if available
+                if hasattr(move, 'current_pp') and move.current_pp is not None:
+                    move_strs.append(f"move {move.id} (PP: {move.current_pp}/{move.max_pp})")
+                else:
+                    move_strs.append(f"move {move.id}")
+            lines.append("Available moves: " + ", ".join(move_strs))
+        
+        if battle.available_switches:
+            switch_strs = []
+            for pokemon in battle.available_switches:
+                hp_pct = pokemon.current_hp_fraction * 100 if pokemon.current_hp_fraction else 0
+                switch_strs.append(f"switch {pokemon.species} ({hp_pct:.0f}% HP)")
+            lines.append("Available switches: " + ", ".join(switch_strs))
+        
+        if not lines:
+            lines.append("No actions available (forced to use Struggle or default)")
+        
+        return "\n".join(lines)
 
     def _choose_random_move_only(self, battle: AbstractBattle) -> str:
         """Fallback random move (without description)."""

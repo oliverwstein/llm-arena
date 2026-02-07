@@ -95,6 +95,7 @@ class LLMPlayer(AgentPlayer):
         verbose: bool = False,
         max_tool_calls: int = 20,
         battle_logger: Optional["BattleLogger"] = None,
+        reasoning_effort: Optional[str] = None,
         **kwargs
     ):
         """
@@ -107,6 +108,7 @@ class LLMPlayer(AgentPlayer):
         self.timeout = timeout
         self.system_prompt = system_prompt
         self.max_tool_calls = max_tool_calls
+        self.reasoning_effort = reasoning_effort
 
         # Multi-provider compatibility: Disable tools for reasoning models that don't support them well
         self.use_tools = True
@@ -137,6 +139,64 @@ class LLMPlayer(AgentPlayer):
             
         return result
 
+    async def _request_action_correction(
+        self,
+        context: dict,
+        invalid_action: str,
+        valid_actions: str
+    ) -> dict:
+        """
+        Request a corrected action from the LLM when parsing failed.
+        
+        Makes a simple, focused request showing what went wrong
+        and what actions are actually available.
+        """
+        correction_prompt = f"""Your previous action could not be executed: "{invalid_action}"
+
+This action is not valid. Here are the ONLY valid actions right now:
+{valid_actions}
+
+Please respond with ONLY a valid action from the list above.
+Format: ACTION: move <name> or ACTION: switch <name>"""
+
+        messages = [
+            {"role": "system", "content": "You are correcting an invalid Pokemon battle action. Respond with ONLY the corrected action."},
+            {"role": "user", "content": correction_prompt}
+        ]
+
+        try:
+            # Simple call without tools - just need the corrected action
+            completion_kwargs = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": self.temperature,
+                "max_tokens": 100,  # Very short response expected
+                "timeout": 30.0,  # Quick timeout for correction
+            }
+            
+            if self.reasoning_effort:
+                completion_kwargs["reasoning_effort"] = self.reasoning_effort
+
+            response = await litellm.acompletion(**completion_kwargs)
+            
+            content = response.choices[0].message.content or ""
+            
+            # Parse the correction
+            parsed = self._parse_subagent_response(content, [])
+            
+            if self.verbose:
+                print(f"[{self.username}] Correction response: {parsed.get('action', 'none')}")
+            
+            return {
+                "action": parsed.get("action", ""),
+                "reasoning": f"Corrected from '{invalid_action}'"
+            }
+            
+        except Exception as e:
+            if self.verbose:
+                print(f"[{self.username}] Action correction failed: {e}")
+            return {}
+
     async def _execute_generation(self, messages, tools=None, tool_choice=None, max_tokens=None):
         """
         Execute generation with streaming to capture partial output on timeout.
@@ -154,18 +214,24 @@ class LLMPlayer(AgentPlayer):
             reasoning_tokens = 0
             
             try:
-                # Use stream_options to try getting usage if supported
-                stream = await litellm.acompletion(
-                    model=self.model,
-                    messages=messages,
-                    tools=tools,
-                    tool_choice=tool_choice,
-                    temperature=self.temperature,
-                    max_tokens=max_tokens or self.max_tokens,
-                    timeout=self.timeout,
-                    stream=True,
-                    stream_options={"include_usage": True}
-                )
+                # Build kwargs for acompletion
+                completion_kwargs = {
+                    "model": self.model,
+                    "messages": messages,
+                    "tools": tools,
+                    "tool_choice": tool_choice,
+                    "temperature": self.temperature,
+                    "max_tokens": max_tokens or self.max_tokens,
+                    "timeout": self.timeout,
+                    "stream": True,
+                    "stream_options": {"include_usage": True},
+                }
+                
+                # Add reasoning_effort for reasoning models (GPT-5-Mini, o1, etc.)
+                if self.reasoning_effort:
+                    completion_kwargs["reasoning_effort"] = self.reasoning_effort
+                
+                stream = await litellm.acompletion(**completion_kwargs)
                 
                 async for chunk in stream:
                     # Handle usage if present (often in last chunk)

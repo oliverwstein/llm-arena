@@ -96,6 +96,7 @@ async def benchmark_model(
         temperature=model_config.temperature,
         max_tokens=model_config.max_tokens,
         timeout=timeout,
+        reasoning_effort=model_config.reasoning_effort,
         battle_format=BATTLE_FORMAT,
         team=llm_team,
         server_configuration=SERVER_CONFIG,

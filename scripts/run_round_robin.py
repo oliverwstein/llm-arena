@@ -253,6 +253,7 @@ def create_player_pools(
                     temperature=model_config.temperature,
                     max_tokens=model_config.max_tokens,
                     timeout=model_config.timeout,
+                    reasoning_effort=model_config.reasoning_effort,
                     battle_format=BATTLE_FORMAT,
                     team=None,
                     server_configuration=CUSTOM_SERVER_CONFIG,
