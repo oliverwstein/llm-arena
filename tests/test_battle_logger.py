@@ -271,6 +271,53 @@ def test_fallback_logging():
         assert entry["random_action"] == "move tackle"
 
 
+def test_token_aggregation():
+    """Test that _sum_player_tokens correctly sums across multiple battles."""
+    # Import the helper from llm_vs_llm
+    sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+    from llm_vs_llm import _sum_player_tokens
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_dir = Path(tmpdir)
+        logger = BattleLogger(log_dir=tmpdir, enabled=True)
+
+        # Simulate two battles with the same player
+        for battle_id in ["battle-1", "battle-2"]:
+            logger.start_battle(
+                battle_id=battle_id,
+                player_id="PlayerA",
+                model="test-model",
+                showdown_username="PlayerA",
+            )
+            logger.log_action(
+                battle_id=battle_id, player_id="PlayerA", turn=1,
+                observation="", state="", raw_response="move tackle",
+                tool_calls=[], parsed={},
+                tokens={"input": 100, "output": 50, "reasoning": 10, "cached": 40},
+                latency_ms=500,
+            )
+            logger.log_action(
+                battle_id=battle_id, player_id="PlayerA", turn=2,
+                observation="", state="", raw_response="move tackle",
+                tool_calls=[], parsed={},
+                tokens={"input": 200, "output": 80, "cached": 150},
+                latency_ms=600,
+            )
+            # Also add a fallback (no tokens -- should be skipped gracefully)
+            logger.log_fallback(
+                battle_id=battle_id, player_id="PlayerA",
+                turn=3, reason="timeout", random_action="move struggle",
+            )
+
+        totals = _sum_player_tokens(session_dir, "PlayerA")
+        # 2 battles x (100+200) input = 600, 2 x (50+80) output = 260,
+        # 2 x 10 reasoning = 20, 2 x (40+150) cached = 380
+        assert totals["input"] == 600
+        assert totals["output"] == 260
+        assert totals["reasoning"] == 20
+        assert totals["cached"] == 380
+
+
 if __name__ == "__main__":
     test_basic_logging()
     test_disabled_logging()
@@ -278,4 +325,5 @@ if __name__ == "__main__":
     test_player_mode_and_class()
     test_player_mode_optional()
     test_fallback_logging()
+    test_token_aggregation()
     print("\nAll tests passed!")

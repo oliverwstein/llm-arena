@@ -124,6 +124,7 @@ Your final response must include:
         total_input_tokens = 0
         total_output_tokens = 0
         total_reasoning_tokens = 0
+        total_cached_tokens = 0
         raw_response_parts = []
 
         current_tools = get_llm_tool_definitions() if self.use_tools else None
@@ -148,6 +149,11 @@ Your final response must include:
                         reasoning = getattr(details, 'reasoning_tokens', 0)
                         if reasoning:
                             total_reasoning_tokens += reasoning
+                    prompt_details = getattr(response.usage, 'prompt_tokens_details', None)
+                    if prompt_details:
+                        cached = getattr(prompt_details, 'cached_tokens', 0)
+                        if cached:
+                            total_cached_tokens += cached
 
                 # Handle tool calls in scratch space
                 if message.tool_calls and self.use_tools:
@@ -229,7 +235,8 @@ Your final response must include:
                     parsed["tokens"] = {
                         "input": total_input_tokens,
                         "output": total_output_tokens,
-                        "reasoning": total_reasoning_tokens
+                        "reasoning": total_reasoning_tokens,
+                        "cached": total_cached_tokens
                     }
 
                     return parsed

@@ -207,8 +207,35 @@ async def run_battle(
         return {"status": "error", "reason": str(e)}
 
 
+def _sum_player_tokens(session_dir: Path, player_id: str) -> dict:
+    """Sum token usage across all battle JSONL files for a player."""
+    totals = {"input": 0, "output": 0, "reasoning": 0, "cached": 0}
+    battles_dir = session_dir / "battles"
+    if not battles_dir.exists():
+        return totals
+    safe_name = player_id.replace("/", "_").replace("\\", "_")
+    for battle_dir in battles_dir.iterdir():
+        jsonl_path = battle_dir / f"{safe_name}.jsonl"
+        if not jsonl_path.exists():
+            continue
+        for line in jsonl_path.open():
+            entry = json.loads(line)
+            tokens = entry.get("tokens")
+            if not tokens:
+                continue
+            totals["input"] += tokens.get("input", 0) or 0
+            totals["output"] += tokens.get("output", 0) or 0
+            totals["reasoning"] += tokens.get("reasoning", 0) or 0
+            totals["cached"] += tokens.get("cached", 0) or 0
+    return totals
+
+
 def _write_session_manifest(session_dir: Path, result: dict) -> None:
     """Write session.json manifest with full player details and results."""
+    # Aggregate token usage from logged JSONL files
+    tokens_a = _sum_player_tokens(session_dir, result["player_a"]["label"])
+    tokens_b = _sum_player_tokens(session_dir, result["player_b"]["label"])
+
     manifest = {
         "created_at": datetime.now().isoformat(),
         "format": BATTLE_FORMAT,
@@ -219,6 +246,7 @@ def _write_session_manifest(session_dir: Path, result: dict) -> None:
                 "mode": result["player_a"]["mode"],
                 "player_class": result["player_a"]["player_class"],
                 "team": result["player_a"]["team"],
+                "tokens": tokens_a,
             },
             result["player_b"]["label"]: {
                 "name": result["player_b"]["name"],
@@ -226,6 +254,7 @@ def _write_session_manifest(session_dir: Path, result: dict) -> None:
                 "mode": result["player_b"]["mode"],
                 "player_class": result["player_b"]["player_class"],
                 "team": result["player_b"]["team"],
+                "tokens": tokens_b,
             },
         },
         "results": {

@@ -70,7 +70,8 @@ Regular action (written by log_action):
     "tokens": {                       # token usage for this call
         "input":      int,
         "output":     int,
-        "reasoning":  int             # optional, reasoning-model tokens
+        "reasoning":  int,            # optional, reasoning-model tokens
+        "cached":     int             # input tokens served from provider cache
     },
     "latency_ms":    int,             # wall-clock time for the LLM call
     "confidence":    str,             # self-reported win probability (0-100), may be ""
@@ -110,7 +111,13 @@ Written once after all battles complete.
         "model":        str,          # LiteLLM model ID
         "mode":         str,          # "tools" | "conversational"
         "player_class": str,          # Python class name
-        "team":         str           # team name
+        "team":         str,          # team name
+        "tokens": {                   # aggregated across all battles in this session
+          "input":     int,
+          "output":    int,
+          "reasoning": int,
+          "cached":    int            # input tokens served from provider cache
+        }
       }
     },
     "results": {

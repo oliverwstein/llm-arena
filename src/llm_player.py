@@ -212,6 +212,7 @@ Format: ACTION: move <name> or ACTION: switch <name>"""
             input_tokens = 0
             output_tokens = 0
             reasoning_tokens = 0
+            cached_tokens = 0
             
             try:
                 # Build kwargs for acompletion
@@ -238,7 +239,7 @@ Format: ACTION: move <name> or ACTION: switch <name>"""
                     if hasattr(chunk, 'usage') and chunk.usage:
                         input_tokens = getattr(chunk.usage, 'prompt_tokens', 0)
                         output_tokens = getattr(chunk.usage, 'completion_tokens', 0)
-                        
+
                         # Track reasoning tokens if available
                         details = getattr(chunk.usage, 'completion_tokens_details', None)
                         if details:
@@ -247,6 +248,13 @@ Format: ACTION: move <name> or ACTION: switch <name>"""
                                 reasoning_tokens = r_tokens
                         elif hasattr(chunk.usage, 'reasoning_tokens'):
                             reasoning_tokens = getattr(chunk.usage, 'reasoning_tokens', 0)
+
+                        # Track cached input tokens
+                        prompt_details = getattr(chunk.usage, 'prompt_tokens_details', None)
+                        if prompt_details:
+                            c_tokens = getattr(prompt_details, 'cached_tokens', 0)
+                            if c_tokens:
+                                cached_tokens = c_tokens
                     
                     if not chunk.choices:
                         continue
@@ -307,11 +315,12 @@ Format: ACTION: move <name> or ACTION: switch <name>"""
                         self.message = msg
                         
                 class MockUsage:
-                    def __init__(self, inp, out, reasoning=0):
+                    def __init__(self, inp, out, reasoning=0, cached=0):
                         self.prompt_tokens = inp
                         self.completion_tokens = out
                         self.reasoning_tokens = reasoning
                         self.completion_tokens_details = type('obj', (object,), {'reasoning_tokens': reasoning})
+                        self.prompt_tokens_details = type('obj', (object,), {'cached_tokens': cached})
                         
                 class MockResponse:
                     def __init__(self, choice, usage):
@@ -319,8 +328,8 @@ Format: ACTION: move <name> or ACTION: switch <name>"""
                         self.usage = usage
                 
                 return MockResponse(
-                    MockChoice(MockMessage(response_content, response_reasoning, final_tool_calls)), 
-                    MockUsage(input_tokens, output_tokens, reasoning_tokens)
+                    MockChoice(MockMessage(response_content, response_reasoning, final_tool_calls)),
+                    MockUsage(input_tokens, output_tokens, reasoning_tokens, cached_tokens)
                 )
     
             except litellm.RateLimitError as e:
@@ -419,6 +428,7 @@ Your final response must include:
         total_input_tokens = 0
         total_output_tokens = 0
         total_reasoning_tokens = 0
+        total_cached_tokens = 0
         raw_response_parts = []
 
         # If tools are disabled, we run once without tools using default tools=None
@@ -439,7 +449,7 @@ Your final response must include:
                 if hasattr(response, 'usage') and response.usage:
                     total_input_tokens += getattr(response.usage, 'prompt_tokens', 0)
                     total_output_tokens += getattr(response.usage, 'completion_tokens', 0)
-                    
+
                     # Track reasoning tokens if available
                     details = getattr(response.usage, 'completion_tokens_details', None)
                     if details:
@@ -448,6 +458,13 @@ Your final response must include:
                             total_reasoning_tokens += reasoning
                     elif hasattr(response.usage, 'reasoning_tokens'):
                         total_reasoning_tokens += getattr(response.usage, 'reasoning_tokens', 0)
+
+                    # Track cached input tokens
+                    prompt_details = getattr(response.usage, 'prompt_tokens_details', None)
+                    if prompt_details:
+                        cached = getattr(prompt_details, 'cached_tokens', 0)
+                        if cached:
+                            total_cached_tokens += cached
 
                 # Capture response content (and thinking) for logging
                 full_content = ""
@@ -543,7 +560,8 @@ Your final response must include:
                 parsed["tokens"] = {
                     "input": total_input_tokens, 
                     "output": total_output_tokens,
-                    "reasoning": total_reasoning_tokens
+                    "reasoning": total_reasoning_tokens,
+                    "cached": total_cached_tokens
                 }
                 parsed["latency_ms"] = latency_ms
                 return parsed
@@ -592,6 +610,11 @@ Your final response must include:
             if hasattr(response, 'usage') and response.usage:
                 total_input_tokens += getattr(response.usage, 'prompt_tokens', 0)
                 total_output_tokens += getattr(response.usage, 'completion_tokens', 0)
+                prompt_details = getattr(response.usage, 'prompt_tokens_details', None)
+                if prompt_details:
+                    cached = getattr(prompt_details, 'cached_tokens', 0)
+                    if cached:
+                        total_cached_tokens += cached
 
             final_msg = response.choices[0].message
             final_content = ""
@@ -634,7 +657,8 @@ Your final response must include:
                 "tokens": {
                     "input": total_input_tokens, 
                     "output": total_output_tokens,
-                    "reasoning": total_reasoning_tokens
+                    "reasoning": total_reasoning_tokens,
+                    "cached": total_cached_tokens
                 },
                 "latency_ms": latency_ms
             }
