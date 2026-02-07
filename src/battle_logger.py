@@ -1,10 +1,150 @@
 """Battle logging with directory-based incremental writes.
 
-Log structure:
-  logs/battles/{battle_id}/
-    metadata.json              - battle info, created at start, updated at end
-    protocol.jsonl             - raw showdown protocol, one line per turn
-    {safe_player_id}.jsonl     - one line per action per player (LLM decisions)
+Directory layout
+================
+
+When used from llm_vs_llm.py, the session directory looks like:
+
+  logs/llm-vs-llm-{timestamp}/
+    session.json                    # session manifest (written by llm_vs_llm.py)
+    battles/
+      {battle_id}/
+        metadata.json               # battle info, created at start, updated at end
+        protocol.jsonl              # raw Showdown protocol, one line per turn
+        {player_id}.jsonl           # one line per decision per player
+
+When used from run_round_robin.py, the tournament directory has its own
+manifest.json, and each match-NNNN/ subdirectory contains the same
+battles/ structure above.
+
+File schemas
+============
+
+metadata.json
+-------------
+Written by start_battle(), updated by end_battle().
+
+  {
+    "battle_id":    str,              # Showdown battle tag, e.g. "battle-gen4ou-1234"
+    "started_at":   str,              # ISO-8601 UTC timestamp
+    "completed_at": str,              # ISO-8601 UTC, added by end_battle()
+    "players": {
+      "<player_id>": {                # key = human-readable label
+        "model":            str,      # LiteLLM model ID, e.g. "gemini/gemini-3-flash-preview"
+        "team":             str,      # team name or "unknown"
+        "showdown_username": str,     # Showdown login name (may differ from player_id)
+        "mode":             str,      # optional: "tools" | "conversational"
+        "player_class":     str       # optional: "LLMPlayer" | "ConversationalLLMPlayer"
+      }
+    },
+    "outcome": {                      # added by end_battle()
+      "winner_player_id":  str,       # player_id of the winner
+      "total_turns":       int,
+      "forfeit":           bool
+    }
+  }
+
+{player_id}.jsonl  --  action entries
+-------------------------------------
+One JSON object per line. Two entry types, distinguished by the
+presence of a "fallback" key:
+
+Regular action (written by log_action):
+
+  {
+    "turn":          int,             # battle turn number (may repeat for forced switches)
+    "observation":   str,             # events visible to the player this turn
+    "state":         str,             # formatted battle state snapshot
+    "raw_response":  str,             # full LLM output text
+    "tool_calls":    [ {              # tool calls made during this decision
+        "name":        str,
+        "args":        str,
+        "result":      str,
+        "duration_ms": int
+    } ],
+    "parsed": {                       # structured fields extracted from LLM response
+        "action":     str,            # e.g. "move stealthrock", "switch Gengar"
+        "reasoning":  str,
+        "prediction": str
+    },
+    "tokens": {                       # token usage for this call
+        "input":      int,
+        "output":     int,
+        "reasoning":  int             # optional, reasoning-model tokens
+    },
+    "latency_ms":    int,             # wall-clock time for the LLM call
+    "confidence":    str,             # self-reported win probability (0-100), may be ""
+    "timestamp":     str              # ISO-8601 UTC
+  }
+
+Fallback action (written by log_fallback):
+
+  {
+    "turn":          int,
+    "fallback":      true,            # always literal true -- distinguishes from regular entries
+    "reason":        str,             # why the fallback happened, e.g. "timeout", "api_error"
+    "random_action": str,             # the random action that was taken instead
+    "timestamp":     str              # ISO-8601 UTC
+  }
+
+protocol.jsonl
+--------------
+One JSON object per line, one line per turn. Written incrementally by
+log_protocol(); duplicate turns are skipped automatically.
+
+  {
+    "turn":   int,                    # turn number
+    "events": [[str, ...], ...]       # raw Showdown protocol events for this turn
+  }
+
+session.json  (llm_vs_llm.py only)
+-----------------------------------
+Written once after all battles complete.
+
+  {
+    "created_at": str,                # ISO-8601 local timestamp
+    "format":     str,                # e.g. "gen4ou"
+    "players": {
+      "<player_label>": {
+        "name":         str,          # model display name from config
+        "model":        str,          # LiteLLM model ID
+        "mode":         str,          # "tools" | "conversational"
+        "player_class": str,          # Python class name
+        "team":         str           # team name
+      }
+    },
+    "results": {
+      "total_battles":      int,
+      "<player_label_a>":   int,      # wins for player A
+      "<player_label_b>":   int       # wins for player B
+    }
+  }
+
+Reading the logs
+================
+
+  import json
+  from pathlib import Path
+
+  battle_dir = Path("logs/llm-vs-llm-.../battles/battle-gen4ou-1234")
+
+  # Load metadata
+  meta = json.loads((battle_dir / "metadata.json").read_text())
+
+  # Iterate player actions
+  for player_id in meta["players"]:
+      path = battle_dir / f"{player_id}.jsonl"
+      for line in path.open():
+          entry = json.loads(line)
+          if entry.get("fallback"):
+              print(f"  T{entry['turn']} FALLBACK: {entry['reason']}")
+          else:
+              print(f"  T{entry['turn']} {entry['parsed']['action']}  ({entry['latency_ms']}ms)")
+
+  # Iterate protocol
+  for line in (battle_dir / "protocol.jsonl").open():
+      turn = json.loads(line)
+      print(f"  Turn {turn['turn']}: {len(turn['events'])} events")
 """
 
 import json
