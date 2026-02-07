@@ -9,7 +9,7 @@ Three subcommands:
 
 Examples:
   # Generate a tournament manifest
-  python3 scripts/run_round_robin.py generate --models Grok-4 DeepSeek-Reasoner Gemini-3-Flash GPT-5-Mini --games-per-pair 3
+  python3 scripts/run_round_robin.py generate --models DeepSeek-Reasoner Gemini-3-Flash GPT-5-Mini --games-per-pair 3
 
   # Run the tournament (resumable)
   python3 scripts/run_round_robin.py run --manifest logs/{tournament-name}/manifest.json --concurrent 6 --per-model-concurrent 3
@@ -244,6 +244,7 @@ def create_player_pools(
                     team=None,
                     server_configuration=CUSTOM_SERVER_CONFIG,
                     error_rate=mock_error_rate,
+                    verbose=True,
                 )
             else:
                 player = LLMPlayer(
@@ -264,6 +265,65 @@ def create_player_pools(
     return pools
 
 
+async def cleanup_player(player, expected_opponent_username: Optional[str] = None):
+    """
+    Ensure player is in a clean state (not stuck in old battles).
+    If expected_opponent_username is provided, preserve battles against that opponent (resume).
+    Forfeit and delete all others.
+    """
+    # Wait for server to sync battle state to this player
+    # This is important because when a player connects, the server sends info about
+    # their active battles, but this happens asynchronously
+    await asyncio.sleep(1.5)
+    
+    # We need to access player.battles safely
+    # If the player hasn't connected yet, this might be empty, but that's fine 
+    # (if not connected, no battles on server could be tracked by this instance yet).
+    if not hasattr(player, "battles"):
+        return
+
+    # Debug: show what battles this player has
+    if player.battles:
+        print(f"[{player.username}] Has {len(player.battles)} tracked battles: {list(player.battles.keys())}")
+    else:
+        print(f"[{player.username}] No tracked battles (battles dict is empty)")
+
+    battles_to_cleanup = []
+
+    for battle_tag, battle in list(player.battles.items()):
+        if battle.finished:
+            # Clean up finished battles (just delete locally)
+            battles_to_cleanup.append((battle_tag, False))  # (tag, needs_forfeit)
+            continue
+            
+        opponent = battle.opponent_username
+        
+        # If this is our expected match, preserve it for resumption
+        if expected_opponent_username and opponent == expected_opponent_username:
+            continue
+            
+        print(f"[{player.username}] Forfeiting orphan battle {battle_tag} vs {opponent}")
+        battles_to_cleanup.append((battle_tag, True))  # (tag, needs_forfeit)
+    
+    # Forfeit active battles on the server, then delete from local tracking
+    for battle_tag, needs_forfeit in battles_to_cleanup:
+        try:
+            if needs_forfeit:
+                # Send forfeit to server
+                await player.forfeit(battle_tag)
+                # Brief wait for server to process
+                await asyncio.sleep(0.5)
+            # Delete from local tracking
+            del player.battles[battle_tag]
+        except Exception as e:
+            print(f"[{player.username}] Error cleaning up {battle_tag}: {e}")
+            # Still try to delete locally
+            try:
+                del player.battles[battle_tag]
+            except KeyError:
+                pass
+
+
 async def run_match(
     match: dict,
     models_by_name: dict[str, ModelConfig],
@@ -271,12 +331,18 @@ async def run_match(
     match_dir: Path,
     player_a,
     player_b,
+    force_new: bool = False,
 ) -> dict:
     """
     Run a single match using pre-created players and return updated match dict.
     
     Players are prepared for this match via prepare_for_battle() before calling.
     Winner is determined via battle.won/battle.lost BEFORE reset_battles().
+    
+    Args:
+        force_new: If True, forfeit any existing battle vs opponent and start fresh.
+                   Use True when resuming from "pending" status (fresh start).
+                   Use False when resuming from "running" status (continue existing).
     """
     model_a = models_by_name[match["model_a"]]
     model_b = models_by_name[match["model_b"]]
@@ -294,14 +360,42 @@ async def run_match(
     player_a.prepare_for_battle(team_a, match["team_a"], logger)
     player_b.prepare_for_battle(team_b, match["team_b"], logger)
     
-    # Clear and re-register opponents (players face different opponents each match)
+    if force_new:
+        # Forfeit ALL existing battles (including vs the opponent) to start fresh
+        await cleanup_player(player_a, expected_opponent_username=None)
+        await cleanup_player(player_b, expected_opponent_username=None)
+    else:
+        # Cleanup orphan battles, but allow resuming battle vs each other
+        await cleanup_player(player_a, expected_opponent_username=player_b.username)
+        await cleanup_player(player_b, expected_opponent_username=player_a.username)
+    
+    # Clear and re-register opponents
     player_a.clear_opponent_registry()
     player_b.clear_opponent_registry()
     player_a.register_opponent(player_b.username, model_b.model, player_id=player_b.player_id)
     player_b.register_opponent(player_a.username, model_a.model, player_id=player_a.player_id)
     
-    # Run battle
-    await player_a.battle_against(player_b, n_battles=1)
+    # Check if we are ALREADY battling each other (only possible if force_new=False)
+    existing_battle_tag = None
+    if not force_new:
+        for tag, battle in player_a.battles.items():
+            if battle.opponent_username == player_b.username and not battle.finished:
+                existing_battle_tag = tag
+                break
+            
+    if existing_battle_tag:
+        print(f"[{player_a.username}] Resuming existing battle {existing_battle_tag} vs {player_b.username}")
+        # Wait for this battle to finish
+        # We assume the agent loop is running implicitly because poke-env dispatches messages
+        # to choose_move() as long as the player is connected.
+        battle = player_a.battles[existing_battle_tag]
+        while not battle.finished:
+            await asyncio.sleep(1.0)
+    else:
+        # Run new battle
+        await player_a.battle_against(player_b, n_battles=1)
+    
+    # Get battle tag and determine winner BEFORE reset_battles()
     
     # Get battle tag and determine winner BEFORE reset_battles()
     battle_tag = None
@@ -375,16 +469,13 @@ async def run_tournament(
         models_by_name, per_model_concurrent, use_mock, mock_error_rate
     )
     
-    # Reset any 'running' matches to 'pending' (crash recovery)
-    for match in manifest["matches"]:
-        if match["status"] == "running":
-            match["status"] = "pending"
-    write_manifest(manifest, manifest_path)
-    
-    # Filter to pending/failed matches
+    # Filter to matches that need processing:
+    # - "pending": new match, start fresh
+    # - "running": interrupted match, try to resume
+    # - "failed": retry (start fresh)
     pending_matches = [
         m for m in manifest["matches"]
-        if m["status"] in ("pending", "failed") and m["attempts"] < max_retries
+        if m["status"] in ("pending", "running", "failed") and m["attempts"] < max_retries
     ]
     
     if not pending_matches:
@@ -453,6 +544,7 @@ async def run_tournament(
         
         model_a = match["model_a"]
         model_b = match["model_b"]
+        original_status = match["status"]  # Track if this was pending vs failed/running
         
         match_desc = f"#{match['id']}: {model_a} vs {model_b}"
         print(f"[START] {match_desc}")
@@ -474,9 +566,12 @@ async def run_tournament(
             # Compute match directory path
             match_dir = tournament_dir / f"match-{match['id']:04d}"
             
+            # "pending" or "failed" = start fresh, "running" = try to resume
+            force_new = (original_status != "running")
+            
             result = await run_match(
                 match, models_by_name, team_pool, match_dir,
-                player_a, player_b
+                player_a, player_b, force_new=force_new
             )
             
             async with manifest_lock:

@@ -38,6 +38,7 @@ def get_move_data(move: Move, pokemon: Pokemon = None, battle = None) -> dict:
     }
     
     # Check battle.last_request for actual PP values
+    found_pp = False
     if battle and battle.last_request:
         request = battle.last_request
         if 'active' in request and request['active']:
@@ -47,9 +48,30 @@ def get_move_data(move: Move, pokemon: Pokemon = None, battle = None) -> dict:
                     req_id = req_move.get('id', '')
                     # Handle Hidden Power: move.id is "hiddenpowerice" but request has "hiddenpower"
                     if req_id == move.id or move.id.startswith(req_id):
-                        data["pp"] = req_move.get('pp', 0)
-                        data["max_pp"] = req_move.get('maxpp', 0)
+                        pp = req_move.get('pp', 0)
+                        maxpp = req_move.get('maxpp', 0)
+                        # For locked moves (e.g., Outrage), pp and maxpp are 0 in the request.
+                        # In that case, use the Move object's tracked PP.
+                        if pp == 0 and maxpp == 0:
+                            try:
+                                data["pp"] = move.current_pp
+                                data["max_pp"] = move.max_pp
+                                found_pp = True
+                            except (AttributeError, ValueError):
+                                pass  # Fall through to below
+                        else:
+                            data["pp"] = pp
+                            data["max_pp"] = maxpp
+                            found_pp = True
                         break
+    
+    # Fallback: use Move object's PP tracking if request lookup failed
+    if not found_pp:
+        try:
+            data["pp"] = move.current_pp
+            data["max_pp"] = move.max_pp
+        except (AttributeError, ValueError):
+            pass  # Leave PP unset if unavailable
     
     return data
 

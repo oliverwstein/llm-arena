@@ -86,9 +86,32 @@ def get_field_analysis(battle: AbstractBattle) -> dict:
 
     if opponent:
         flying = any(t and t.name == "FLYING" for t in opponent.types)
-        levitate = opponent.ability and "levitate" in str(opponent.ability).lower()
-        opponent_grounded = not (flying or levitate)
-        result["opponent_pokemon_grounded"] = opponent_grounded
+        if opponent.ability:
+            # Ability is known - check if it's Levitate
+            levitate = "levitate" in str(opponent.ability).lower()
+            opponent_known_grounded = not (flying or levitate)
+        else:
+            # Ability unknown - check if species can even have Levitate
+            can_have_levitate = False
+            try:
+                from poke_env.data import GenData
+                gen_data = GenData.from_gen(4)
+                species_id = opponent.species.lower().replace(" ", "").replace("-", "")
+                for pid, pdata in gen_data.pokedex.items():
+                    if pid.replace("-", "") == species_id:
+                        possible_abilities = [a.lower() for a in pdata.get("abilities", {}).values()]
+                        can_have_levitate = "levitate" in possible_abilities
+                        break
+            except Exception:
+                pass  # Fall back to uncertain if lookup fails
+            
+            if flying:
+                opponent_known_grounded = False  # Flying type, definitely not grounded
+            elif can_have_levitate:
+                opponent_known_grounded = None  # Unknown - might have Levitate
+            else:
+                opponent_known_grounded = True  # Can't have Levitate, so grounded
+        result["opponent_pokemon_known_grounded"] = opponent_known_grounded
 
     # Generate tactical notes
     notes = []

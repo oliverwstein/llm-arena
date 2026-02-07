@@ -15,17 +15,17 @@
 
 models:
   # Anthropic
-  - name: "Claude-Opus-4.5"
+  - name: "Claude-Opus"
     model: "claude-opus-4-5-20251101"
     temperature: 0.7
     team: "Raw-Teams/Mixed-Jirachi-Gengar-Offense.md"
 
-  - name: "Claude-Sonnet-4.5"
+  - name: "Claude-Sonnet"
     model: "claude-sonnet-4-5-20251101"
     temperature: 0.7
     team: "Raw-Teams/Dragonite-Lead-Boom-Offense.md"
 
-  - name: "Claude-Haiku-4.5"
+  - name: "Claude-Haiku"
     model: "claude-haiku-4-5-20251101"
     temperature: 0.7
     team: "Raw-Teams/Forretress-Zapdos-Balance.md"
@@ -45,7 +45,7 @@ models:
 
 
   # OpenAI
-  - name: "GPT-5.1"
+  - name: "GPT-5-1"
     model: "gpt-5.1"
     temperature: 0.7
     team: "Raw-Teams/Mixed-Flygon-Spikes-Stack.md"
@@ -58,13 +58,13 @@ models:
     api_price_output: 2.00
 
 
-  - name: "GPT-4.1"
+  - name: "GPT-4-1"
     model: "gpt-4.1"
     temperature: 0.7
     team: "Raw-Teams/OTR-Bronzong-ChoiceBand-Ttar.md"
 
   # DeepSeek
-  - name: "DeepSeek-Reasoner"
+  - name: "DeepSeek"
     model: "deepseek/deepseek-reasoner"
     temperature: 0.7
     team: "Raw-Teams/My-Blue-Heaven.md"

@@ -107,6 +107,23 @@ class TestLLMPlayerIntegration:
         result = parse_llm_response(response, battle)
         assert result == pokemon
 
+    def test_response_parser_invalid_action(self):
+        """Test that response parser returns None for invalid actions."""
+        from src.response_parser import parse_llm_response
+        
+        battle = MagicMock()
+        
+        # Mock available moves - only earthquake is available
+        move = MagicMock()
+        move.id = "earthquake"
+        battle.available_moves = [move]
+        battle.available_switches = []
+        
+        # Test invalid action like "move struggle" - should return None
+        response = "ACTION: move struggle"
+        result = parse_llm_response(response, battle)
+        assert result is None  # Parser should return None for invalid action
+
 
 class TestSubagentPattern:
     """Tests for the subagent pattern implementation."""

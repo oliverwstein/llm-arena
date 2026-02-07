@@ -39,6 +39,11 @@ class AgentPlayer(Player):
         self.known_opponents: dict[str, str] = {}  # username -> model_id
         self.known_opponent_ids: dict[str, str] = {}  # username -> player_id
 
+    async def forfeit(self, battle_tag: str) -> None:
+        """Forfeit a battle."""
+        await self.ps_client.send_message("/forfeit", room=battle_tag)
+
+
     def register_opponent(self, username: str, model: str, player_id: Optional[str] = None) -> None:
         """
         Register a known opponent model.
@@ -167,7 +172,24 @@ class AgentPlayer(Player):
 
             return random_order
 
-        return self.create_order(self._parse_action(action_string, battle))
+        # 8. Parse and validate the action
+        parsed = self._parse_action(action_string, battle)
+        if parsed is None:
+            # Invalid action from LLM - use fallback
+            random_order, random_action_desc = self._choose_random_move_with_description(battle)
+            if self.battle_logger:
+                self.battle_logger.log_fallback(
+                    battle_id=battle_id,
+                    player_id=self.player_id,
+                    turn=battle.turn,
+                    reason=f"invalid_action: {action_string}",
+                    random_action=random_action_desc
+                )
+            if self.verbose:
+                print(f"[{self.username}] FALLBACK (invalid action '{action_string}'): {random_action_desc}")
+            return random_order
+
+        return self.create_order(parsed)
 
     async def _make_decision(self, context: dict) -> dict:
         """
