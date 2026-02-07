@@ -56,6 +56,8 @@ class BattleLogger:
         showdown_username: str,
         opponent_player_id: Optional[str] = None,
         player_team: str = "unknown",
+        player_mode: Optional[str] = None,
+        player_class: Optional[str] = None,
     ) -> None:
         """
         Register a player for a battle.
@@ -81,11 +83,16 @@ class BattleLogger:
             }
 
         # Add this player's info
-        metadata["players"][player_id] = {
+        player_info = {
             "model": model,
             "team": player_team,
             "showdown_username": showdown_username,
         }
+        if player_mode is not None:
+            player_info["mode"] = player_mode
+        if player_class is not None:
+            player_info["player_class"] = player_class
+        metadata["players"][player_id] = player_info
 
         with open(meta_path, "w") as f:
             json.dump(metadata, f, indent=2)

@@ -25,6 +25,7 @@ class AgentPlayer(Player):
         verbose: bool = False,
         team_name: str = "unknown",
         player_id: Optional[str] = None,
+        player_mode: Optional[str] = None,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -32,6 +33,7 @@ class AgentPlayer(Player):
         self.verbose = verbose
         self.team_name = team_name
         self.player_id = player_id or self.username
+        self.player_mode = player_mode
 
         # Per-battle state
         self.decision_history: dict[str, list[dict]] = {}  # battle_id -> decisions
@@ -285,6 +287,8 @@ class AgentPlayer(Player):
                     showdown_username=self.username,
                     opponent_player_id=opponent_player_id,
                     player_team=self.team_name,
+                    player_mode=self.player_mode,
+                    player_class=type(self).__name__,
                 )
 
     def _update_previous_outcome(self, battle_id: str, prev_events: str):

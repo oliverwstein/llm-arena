@@ -3,8 +3,9 @@
 
 import asyncio
 import argparse
+import json
 import sys
-import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -14,8 +15,15 @@ from poke_env import AccountConfiguration
 
 from src.config import ModelConfig, load_models_from_yaml, find_model
 from src.llm_player import LLMPlayer, CUSTOM_SERVER_CONFIG
+from src.conversational_llm_player import ConversationalLLMPlayer
 from src.team_pool import get_team_pool
 from src.env_manager import load_env_file, has_api_key
+
+# Player mode mapping
+PLAYER_MODES = {
+    "tools": LLMPlayer,
+    "conversational": ConversationalLLMPlayer,
+}
 from src.battle_logger import BattleLogger
 
 # Load environment
@@ -49,6 +57,25 @@ def resolve_team(team_path: Optional[str], team_pool):
     return packed, name
 
 
+def _make_player_label(model_name: str, mode: str, suffix: str, is_mirror: bool) -> str:
+    """Generate a clean, human-readable player label that fits Showdown's 18-char limit.
+
+    For mirror matches (same model), includes a mode tag (tool/conv).
+    For non-mirror matches, just uses the model name + suffix.
+    """
+    mode_tag = "tool" if mode == "tools" else "conv"
+    if is_mirror:
+        # e.g. "Gemini-3-Fl-tool-A" -- reserve room for "-{tag}-{suffix}"
+        max_name = 18 - len(mode_tag) - len(suffix) - 2  # 2 dashes
+        base = model_name[:max_name].rstrip(".-_")
+        return f"{base}-{mode_tag}-{suffix}"
+    else:
+        # e.g. "Gemini-3-Flash-A"
+        max_name = 18 - len(suffix) - 1  # 1 dash
+        base = model_name[:max_name].rstrip(".-_")
+        return f"{base}-{suffix}"
+
+
 async def run_battle(
     model_a: ModelConfig,
     model_b: ModelConfig,
@@ -56,14 +83,19 @@ async def run_battle(
     n_battles: int = 5,
     verbose: bool = False,
     battle_logger: BattleLogger = None,
+    player_class_a = LLMPlayer,
+    player_class_b = LLMPlayer,
+    mode_a: str = "tools",
+    mode_b: str = "tools",
+    session_dir: Optional[Path] = None,
 ) -> dict:
     """Run battles between two LLM players."""
 
     print(f"\n{'='*60}")
     print(f"LLM vs LLM Battle")
     print(f"{'='*60}")
-    print(f"  Player A: {model_a.name} ({model_a.model})")
-    print(f"  Player B: {model_b.name} ({model_b.model})")
+    print(f"  Player A: {model_a.name} ({model_a.model}) [{mode_a}]")
+    print(f"  Player B: {model_b.name} ({model_b.model}) [{mode_b}]")
     print(f"  Battles: {n_battles}")
     print(f"{'='*60}")
 
@@ -71,34 +103,26 @@ async def run_battle(
     if not has_api_key(model_a.model):
         print(f"  ERROR: No API key available for {model_a.model}")
         return {"status": "error", "reason": f"no_api_key for {model_a.name}"}
-    
+
     if not has_api_key(model_b.model):
         print(f"  ERROR: No API key available for {model_b.model}")
         return {"status": "error", "reason": f"no_api_key for {model_b.name}"}
 
-    # Create unique usernames and player IDs
-    session_id = str(uuid.uuid4())[:8]
-    username_a = f"{model_a.name}-{session_id}"[:18]
-    username_b = f"{model_b.name}-{session_id}"[:18]
-
-    # Ensure unique if same model
-    if username_a == username_b:
-        username_b = username_b[:-1] + "2"
-
-    # Generate full player IDs (not truncated like usernames)
-    player_id_a = f"{model_a.model}-{uuid.uuid4().hex[:8]}"
-    player_id_b = f"{model_b.model}-{uuid.uuid4().hex[:8]}"
+    # Generate clean player labels (used as both Showdown username and player_id)
+    is_mirror = model_a.name == model_b.name
+    label_a = _make_player_label(model_a.name, mode_a, "A", is_mirror)
+    label_b = _make_player_label(model_b.name, mode_b, "B", is_mirror)
 
     # Resolve teams
     team_a, team_a_name = resolve_team(model_a.team, team_pool)
     team_b, team_b_name = resolve_team(model_b.team, team_pool)
 
-    print(f"  {model_a.name} Team: {team_a_name}")
-    print(f"  {model_b.name} Team: {team_b_name}")
+    print(f"  {label_a} Team: {team_a_name}")
+    print(f"  {label_b} Team: {team_b_name}")
 
-    # Create players
-    player_a = LLMPlayer(
-        account_configuration=AccountConfiguration(username_a, None),
+    # Create players (using specified player classes)
+    player_a = player_class_a(
+        account_configuration=AccountConfiguration(label_a, None),
         model=model_a.model,
         temperature=model_a.temperature,
         max_tokens=model_a.max_tokens,
@@ -110,11 +134,12 @@ async def run_battle(
         verbose=verbose,
         battle_logger=battle_logger,
         team_name=team_a_name,
-        player_id=player_id_a,
+        player_id=label_a,
+        player_mode=mode_a,
     )
 
-    player_b = LLMPlayer(
-        account_configuration=AccountConfiguration(username_b, None),
+    player_b = player_class_b(
+        account_configuration=AccountConfiguration(label_b, None),
         model=model_b.model,
         temperature=model_b.temperature,
         max_tokens=model_b.max_tokens,
@@ -126,12 +151,13 @@ async def run_battle(
         verbose=verbose,
         battle_logger=battle_logger,
         team_name=team_b_name,
-        player_id=player_id_b,
+        player_id=label_b,
+        player_mode=mode_b,
     )
 
     # Register opponents so they can log the enemy model name correctly
-    player_a.register_opponent(username_b, model_b.model, player_id=player_id_b)
-    player_b.register_opponent(username_a, model_a.model, player_id=player_id_a)
+    player_a.register_opponent(label_b, model_b.model, player_id=label_b)
+    player_b.register_opponent(label_a, model_a.model, player_id=label_a)
 
     print(f"\n  Running {n_battles} battles...")
 
@@ -142,29 +168,76 @@ async def run_battle(
         wins_b = player_b.n_won_battles
 
         print(f"\n  Results:")
-        print(f"    {model_a.name}: {wins_a}/{n_battles} ({wins_a/n_battles*100:.1f}%)")
-        print(f"    {model_b.name}: {wins_b}/{n_battles} ({wins_b/n_battles*100:.1f}%)")
+        print(f"    {label_a}: {wins_a}/{n_battles} ({wins_a/n_battles*100:.1f}%)")
+        print(f"    {label_b}: {wins_b}/{n_battles} ({wins_b/n_battles*100:.1f}%)")
 
-        return {
+        result = {
             "status": "completed",
             "player_a": {
+                "label": label_a,
                 "name": model_a.name,
                 "model": model_a.model,
+                "mode": mode_a,
+                "player_class": player_class_a.__name__,
+                "team": team_a_name,
                 "wins": wins_a,
             },
             "player_b": {
+                "label": label_b,
                 "name": model_b.name,
                 "model": model_b.model,
+                "mode": mode_b,
+                "player_class": player_class_b.__name__,
+                "team": team_b_name,
                 "wins": wins_b,
             },
             "total_battles": n_battles,
         }
+
+        # Write session manifest
+        if session_dir:
+            _write_session_manifest(session_dir, result)
+
+        return result
 
     except Exception as e:
         print(f"  ERROR: {e}")
         import traceback
         traceback.print_exc()
         return {"status": "error", "reason": str(e)}
+
+
+def _write_session_manifest(session_dir: Path, result: dict) -> None:
+    """Write session.json manifest with full player details and results."""
+    manifest = {
+        "created_at": datetime.now().isoformat(),
+        "format": BATTLE_FORMAT,
+        "players": {
+            result["player_a"]["label"]: {
+                "name": result["player_a"]["name"],
+                "model": result["player_a"]["model"],
+                "mode": result["player_a"]["mode"],
+                "player_class": result["player_a"]["player_class"],
+                "team": result["player_a"]["team"],
+            },
+            result["player_b"]["label"]: {
+                "name": result["player_b"]["name"],
+                "model": result["player_b"]["model"],
+                "mode": result["player_b"]["mode"],
+                "player_class": result["player_b"]["player_class"],
+                "team": result["player_b"]["team"],
+            },
+        },
+        "results": {
+            "total_battles": result["total_battles"],
+            result["player_a"]["label"]: result["player_a"]["wins"],
+            result["player_b"]["label"]: result["player_b"]["wins"],
+        },
+    }
+    manifest_path = session_dir / "session.json"
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2)
+    print(f"  Session manifest: {manifest_path}")
 
 
 async def main():
@@ -199,6 +272,22 @@ Examples:
     parser.add_argument("--timeout", type=int, help="Override timeout for both models (seconds)")
     parser.add_argument("--max-tokens", type=int, help="Override max tokens for both models")
     parser.add_argument("--no-log", action="store_true", help="Disable battle logging")
+    parser.add_argument(
+        "--mode", 
+        choices=["tools", "conversational"], 
+        default="tools",
+        help="Default player mode for both players (can be overridden per-player)"
+    )
+    parser.add_argument(
+        "--mode-a", 
+        choices=["tools", "conversational"], 
+        help="Player A mode (overrides --mode)"
+    )
+    parser.add_argument(
+        "--mode-b", 
+        choices=["tools", "conversational"], 
+        help="Player B mode (overrides --mode)"
+    )
 
     args = parser.parse_args()
 
@@ -256,10 +345,23 @@ Examples:
         model_b.team = args.team_b
         print(f"  Team B Override: {args.team_b}")
 
-    # Create battle logger
-    logger = None if args.no_log else BattleLogger(log_dir="logs", enabled=True)
-    if logger:
-        print(f"Logging battles to: logs/")
+    # Resolve player modes (per-player overrides default)
+    mode_a = args.mode_a or args.mode
+    mode_b = args.mode_b or args.mode
+    player_class_a = PLAYER_MODES[mode_a]
+    player_class_b = PLAYER_MODES[mode_b]
+    print(f"Player A mode: {mode_a} ({player_class_a.__name__})")
+    print(f"Player B mode: {mode_b} ({player_class_b.__name__})")
+
+    # Create session directory and battle logger
+    session_dir = None
+    logger = None
+    if not args.no_log:
+        session_name = f"llm-vs-llm-{datetime.now().strftime('%Y-%m-%d-%H%M')}"
+        session_dir = Path("logs") / session_name
+        session_dir.mkdir(parents=True, exist_ok=True)
+        logger = BattleLogger(log_dir=str(session_dir), enabled=True)
+        print(f"Logging battles to: {session_dir}/")
 
     # Run battles
     result = await run_battle(
@@ -269,6 +371,11 @@ Examples:
         n_battles=args.battles,
         verbose=args.verbose,
         battle_logger=logger,
+        player_class_a=player_class_a,
+        player_class_b=player_class_b,
+        mode_a=mode_a,
+        mode_b=mode_b,
+        session_dir=session_dir,
     )
 
     # Summary
