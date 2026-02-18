@@ -210,7 +210,8 @@ def calculate_damage(battle: AbstractBattle, move_name: str) -> dict:
         if move_id == normalized or normalized in move_id:
             return move
 
-    return {"error": f"Move '{move_name}' not found in available moves"}
+    available = [m["move"] for m in result["moves"]]
+    return {"error": f"Move '{move_name}' is not available to your active Pokemon. Available moves: {', '.join(available)}. Use 'movedex' to look up any move's stats."}
 
 
 def _get_status_effect_description(move) -> str:

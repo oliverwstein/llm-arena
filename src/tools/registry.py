@@ -120,6 +120,10 @@ def _handle_movedex(battle: AbstractBattle, args: dict, context: dict) -> dict:
     return info_tools.get_move_details(args.get("move", ""))
 
 
+def _handle_abilitydex(battle: AbstractBattle, args: dict, context: dict) -> dict:
+    return info_tools.get_ability_info(args.get("ability", ""))
+
+
 def _handle_plan(battle: AbstractBattle, args: dict, context: dict) -> dict:
     battle_plan = context.get("battle_plan", {})
     return plan_tools.get_battle_plan(battle_plan)
@@ -156,7 +160,7 @@ TOOLS: dict[str, Tool] = {
     # Damage tools
     "damage": Tool(
         name="damage",
-        description="Calculate damage. Call without args for ALL moves, or provide 'move' for a specific move.",
+        description="Calculate damage for your ACTIVE Pokemon's available moves against the current opponent. Call without args for all available moves, or specify a move name. Only works for moves your active Pokemon can use — for general move info, use 'movedex'.",
         handler=_handle_damage,
         params=[
             ToolParam("move", "string", "Name of the specific move to calculate damage for", required=False),
@@ -229,10 +233,18 @@ TOOLS: dict[str, Tool] = {
     ),
     "movedex": Tool(
         name="movedex",
-        description="Look up move details (power, accuracy, type, effects). Syntax: 'movedex <name>'",
+        description="Look up move details by name (power, accuracy, type, effects). For ability info, use 'abilitydex'. For Pokemon info, use 'pokedex'.",
         handler=_handle_movedex,
         params=[
             ToolParam("move", "string", "Move name"),
+        ],
+    ),
+    "abilitydex": Tool(
+        name="abilitydex",
+        description="Look up ability details (effect description, which Pokemon have it).",
+        handler=_handle_abilitydex,
+        params=[
+            ToolParam("ability", "string", "Ability name"),
         ],
     ),
 
@@ -391,6 +403,12 @@ def parse_command(text: str) -> tuple[str, dict]:
         # "move earthquake info" -> movedex earthquake
         return "movedex", {"move": " ".join(rest[:-1])}
 
+    # Ability info
+    if cmd == "abilitydex" or cmd == "ability":
+        if rest:
+            return "abilitydex", {"ability": " ".join(rest)}
+        return "help", {"tool": "abilitydex"}
+
     # Plan
     if cmd == "plan":
         if not rest:
@@ -478,7 +496,7 @@ def get_help_text() -> str:
         "Battle Log": ["log"],
         "Field": ["field", "state"],
         "Type": ["type"],
-        "Info": ["pokedex", "movedex"],  # Note: use "movedex <name>" to avoid conflict with action
+        "Info": ["pokedex", "movedex", "abilitydex"],
         # "Planning": ["plan", "plan_update"],
         "Help": ["help"],
     }

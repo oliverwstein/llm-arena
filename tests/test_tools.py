@@ -208,8 +208,9 @@ class TestTeamTools:
         battle = create_mock_battle()
         
         result = get_opponent_team_summary(battle)
-        assert "revealed_count" in result
+        assert "active" in result
         assert "unrevealed_count" in result
+        assert "fainted_count" in result
 
 
 class TestFieldTools:

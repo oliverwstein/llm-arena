@@ -1,8 +1,135 @@
-"""Move and Pokemon information lookup tools."""
+"""Move, Pokemon, and Ability information lookup tools."""
+
+import os
+import re
 
 from poke_env.data import GenData
 
 from .type_tools import get_all_type_matchups
+
+
+# Cache for parsed ability text data
+_ability_text_cache: dict = {}
+
+
+def _get_ability_texts(gen: int = 4) -> dict:
+    """
+    Parse ability descriptions from Showdown's text data.
+    Cached after first load. Returns dict of ability_id -> {name, desc, shortDesc}.
+    Gen-specific overrides are applied when available.
+    """
+    if _ability_text_cache:
+        return _ability_text_cache
+
+    # Find the abilities text file relative to the project root
+    # Walk up from this file's location to find pokemon-showdown/
+    tools_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(os.path.dirname(tools_dir))
+    filepath = os.path.join(project_root, 'pokemon-showdown', 'data', 'text', 'abilities.ts')
+
+    if not os.path.exists(filepath):
+        return {}
+
+    with open(filepath) as f:
+        content = f.read()
+
+    gen_key = f'gen{gen}'
+
+    # Parse each ability entry
+    pattern = r'\t(\w+):\s*\{([^}]+(?:\{[^}]*\}[^}]*)*)\}'
+    for match in re.finditer(pattern, content):
+        ability_id = match.group(1)
+        block = match.group(2)
+
+        name_match = re.search(r'name:\s*"([^"]+)"', block)
+        desc_match = re.search(r'\bdesc:\s*"([^"]+)"', block)
+        short_match = re.search(r'shortDesc:\s*"([^"]+)"', block)
+
+        # Check for gen-specific override
+        gen_block = re.search(gen_key + r':\s*\{([^}]+)\}', block)
+        gen_desc = None
+        gen_short = None
+        if gen_block:
+            gen_desc_match = re.search(r'\bdesc:\s*"([^"]+)"', gen_block.group(1))
+            gen_short_match = re.search(r'shortDesc:\s*"([^"]+)"', gen_block.group(1))
+            if gen_desc_match:
+                gen_desc = gen_desc_match.group(1)
+            if gen_short_match:
+                gen_short = gen_short_match.group(1)
+
+        _ability_text_cache[ability_id] = {
+            'name': name_match.group(1) if name_match else ability_id,
+            'desc': gen_desc or (desc_match.group(1) if desc_match else None),
+            'shortDesc': gen_short or (short_match.group(1) if short_match else None),
+        }
+
+    return _ability_text_cache
+
+
+def _is_known_ability(name: str, gen: int = 4) -> bool:
+    """Check if a name matches a known ability."""
+    normalized = name.lower().replace(" ", "").replace("-", "").replace("_", "")
+    texts = _get_ability_texts(gen)
+    return normalized in texts
+
+
+def get_ability_info(ability_name: str, gen: int = 4) -> dict:
+    """
+    Get information about a Pokemon ability.
+
+    Args:
+        ability_name: Name of the ability to look up
+        gen: Generation for data (default: 4)
+    """
+    try:
+        normalized = ability_name.lower().replace(" ", "").replace("-", "").replace("_", "")
+        texts = _get_ability_texts(gen)
+
+        # Find the ability
+        ability_data = None
+        ability_id = None
+        for aid, adata in texts.items():
+            if aid == normalized:
+                ability_data = adata
+                ability_id = aid
+                break
+
+        if not ability_data:
+            # Try partial match
+            for aid, adata in texts.items():
+                if normalized in aid:
+                    ability_data = adata
+                    ability_id = aid
+                    break
+
+        if not ability_data:
+            return {"error": f"Ability '{ability_name}' not found"}
+
+        result = {
+            "name": ability_data['name'],
+            "description": ability_data.get('shortDesc') or ability_data.get('desc') or "No description available",
+        }
+
+        if ability_data.get('desc') and ability_data.get('shortDesc'):
+            result["full_description"] = ability_data['desc']
+
+        # Find Pokemon with this ability in the gen
+        gen_data = GenData.from_gen(gen)
+        pokemon_with = []
+        for pid, pdata in gen_data.pokedex.items():
+            abilities = pdata.get("abilities", {})
+            for ability_val in abilities.values():
+                if ability_val.lower().replace(" ", "").replace("-", "") == normalized:
+                    pokemon_with.append(pdata.get("name", pid))
+                    break
+
+        if pokemon_with:
+            result["pokemon_with_ability"] = sorted(set(pokemon_with))
+
+        return result
+
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def get_move_details(move_name: str, gen: int = 4) -> dict:
@@ -34,6 +161,9 @@ def get_move_details(move_name: str, gen: int = 4) -> dict:
                     break
         
         if not move_data:
+            # Check if the user passed an ability name instead of a move
+            if _is_known_ability(move_name, gen):
+                return {"error": f"'{move_name}' is an ability, not a move. Use the 'abilitydex' tool instead."}
             return {"error": f"Move '{move_name}' not found"}
         
         result = {
